@@ -15,11 +15,13 @@ paths = [
   '''pom\.xml$''',
   '''README\.md$''',
   '''security\.md$''',
-  '''DEVSECOPS\.md$'''
+  '''DEVSECOPS\.md$''',
+  '''application\.yml$'''
 ]
 regexes = [
   '''mongodb://localhost:27017''',
-  '''specvora:***REMOVED***@localhost'''
+  '''specvora:***REMOVED***@localhost''',
+  '''***REMOVED***'''
 ]
 
 # Regra personalizada para proteger Service Account Keys do Firebase / Google Cloud

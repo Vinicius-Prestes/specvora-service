@@ -107,20 +107,26 @@ O `JwtAuthFilter` captura `FirebaseAuthException` com `catch (FirebaseAuthExcept
 
 ---
 
-### 7. Autenticação com Bearer Token (Firebase Authentication)
+### 7. Autenticação com Bearer Token JWT e RBAC (Role-Based Access Control)
 
 **Impacto da falha**
-Sem autenticação forte, qualquer cliente pode consultar ou manipular dados da API. Tokens fracos ou sem validação de assinatura permitem falsificação de identidade.
+Sem autenticação forte e controle de perfis de acesso, qualquer usuário anônimo ou comum poderia consultar, adulterar ou deletar dados críticos da aplicação, levando a quebra de confidencialidade e integridade.
 
 **Como o projeto corrige**
-A autenticação é delegada ao **Firebase Authentication**, provedor de identidade gerenciado pela Google com suporte a múltiplos fatores. O fluxo é:
+O projeto implementa uma arquitetura robusta de autenticação e autorização via **JWT (JSON Web Token)** com suporte a **RBAC** e interoperabilidade com **Firebase Authentication**:
 
-1. O cliente autentica-se via Firebase SDK e obtém um **ID Token JWT** assinado.
-2. Cada request inclui o token no header: `Authorization: Bearer <firebase-id-token>`.
-3. O `JwtAuthFilter` intercepta a request, extrai o token e o valida via `FirebaseAuth.getInstance().verifyIdToken()` — que verifica assinatura criptográfica, emissor (`iss`), audience (`aud`) e expiração (`exp`) contra as chaves públicas do Firebase.
-4. Tokens inválidos ou expirados resultam em `401 Unauthorized` imediato, sem avançar na chain de filtros.
-
-A configuração do `SecurityConfig` garante que **toda rota** (exceto os endpoints públicos de documentação) exija autenticação com `.anyRequest().authenticated()`.
+1. **Emissão de JWT com Claims e Expiração:**
+   - O serviço possui um endpoint público `POST /auth/login` que autentica o usuário (validando a senha com hash seguro **BCrypt**) e emite um token assinado criptograficamente via HMAC-SHA256 (`HS256`).
+   - O token incorpora claims essenciais: `sub` (identificador do usuário), `roles` (lista de perfis como `ROLE_ADMIN` e `ROLE_USER`), `iss` ("specvora-service"), `iat` (emissão) e `exp` (expiração de 2 horas).
+2. **Validação e Filtro de Segurança (`JwtAuthFilter`):**
+   - Intercepta todas as requisições com header `Authorization: Bearer <token>`.
+   - Valida a integridade da assinatura, o emissor e a data de expiração via `JwtTokenService`. Caso o token seja oriundo do Firebase, o filtro também realiza a validação via Firebase Admin SDK.
+   - Popula o `SecurityContextHolder` com as autoridades apropriadas (`GrantedAuthority`).
+   - Tokens ausentes ou inválidos retornam imediatamente `401 Unauthorized`.
+3. **Controle de Acesso Baseado em Perfis (`SecurityConfig`):**
+   - **Rotas Públicas:** `/auth/login`, `/auth/register`, `/swagger-ui/**`, `/v3/api-docs/**`.
+   - **Rotas Protegidas (`ROLE_USER` ou `ROLE_ADMIN`):** Consultas de veículos (`GET /vehicles/**`) e buscas (`POST /vehicles/search`).
+   - **Rotas Administrativas (`ROLE_ADMIN`):** Criação (`POST /vehicles`), Atualização (`PUT /vehicles/**`) e Exclusão (`DELETE /vehicles/**`). Tentativas de acesso por usuários sem o devido perfil retornam `403 Forbidden` padronizado.
 
 ---
 

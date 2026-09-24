@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Software Composition Analysis (SCA) contínuo para dependências Maven (pom.xml)
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "security"
+      - "sca"
+
+  # Monitoramento de versões seguras das GitHub Actions utilizadas na pipeline
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "ci"
+      - "security"

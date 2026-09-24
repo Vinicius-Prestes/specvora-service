@@ -199,3 +199,20 @@ private String anonymizeUid(String uid) {
 ```
 
 O hash é determinístico — o mesmo UID sempre produz o mesmo hash — o que permite rastreamento de requisições do mesmo usuário sem expor o identificador original. O UID nunca é propagado além do filtro de autenticação.
+
+---
+
+### 13. Pipeline DevSecOps Integrado (Shift-Left Security)
+
+**Impacto da falha**
+Sem um pipeline automatizado de segurança, vulnerabilidades em bibliotecas terceiras, erros de programação (OWASP Top 10) e credenciais acidentalmente commitadas só seriam detectadas após incidentes em produção ou auditorias manuais tardias, elevando drasticamente o risco e o custo de correção.
+
+**Como o projeto corrige**
+O projeto implementa uma pipeline CI/CD DevSecOps completa via **GitHub Actions** (`.github/workflows/devsecops.yml`), garantindo que nenhum artefato seja publicado sem validação prévia de segurança (*Quality Gates*):
+- **Secret Scanning (Gitleaks & GitGuardian):** Analisa cada commit em busca de chaves Firebase e strings de conexão expostas, utilizando regras em `.gitleaks.toml`.
+- **SCA - Software Composition Analysis (Dependabot & Snyk / Trivy):** Escaneia o `pom.xml` contra CVEs conhecidas e automatiza a abertura de PRs para atualização de dependências vulneráveis via `.github/dependabot.yml`.
+- **SAST - Static Application Security Testing (Semgrep & SonarQube):** Analisa o código-fonte Java contra os padrões do OWASP Top 10 e vulnerabilidades de injeção/tratamento.
+- **Container Hardening (Docker & Trivy):** Constrói a imagem Docker baseada em JRE 21 com usuário não-root (`appuser`) e valida ausência de CVEs no sistema operacional.
+- **Quality Gate no Deploy:** O deploy para ambientes de staging/produção só é liberado se todos os testes e scans forem aprovados com sucesso.
+
+Para a documentação completa, diagrama do pipeline e guia de execução local, consulte o arquivo [DEVSECOPS.md](DEVSECOPS.md).

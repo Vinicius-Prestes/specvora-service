@@ -1,0 +1,45 @@
+# Configuração Gitleaks para detecção de secrets no Specvora Service
+title = "Specvora Service Gitleaks Configuration"
+
+[extend]
+# Estende as regras padrão do Gitleaks (mais de 150 regras conhecidas)
+useDefault = true
+
+[allowlist]
+description = "Arquivos e caminhos permitidos (falso-positivos conhecidos)"
+paths = [
+  '''^\.git/''',
+  '''target/''',
+  '''mvnw''',
+  '''mvnw\.cmd''',
+  '''pom\.xml$''',
+  '''README\.md$''',
+  '''security\.md$''',
+  '''DEVSECOPS\.md$'''
+]
+regexes = [
+  '''mongodb://localhost:27017''',
+  '''specvora:fiap@localhost'''
+]
+
+# Regra personalizada para proteger Service Account Keys do Firebase / Google Cloud
+[[rules]]
+id = "firebase-service-account-private-key"
+description = "Firebase/GCP Service Account Private Key detected"
+regex = '''"private_key":\s*"-----BEGIN PRIVATE KEY-----[A-Za-z0-9+\/=\s]+-----END PRIVATE KEY-----"'''
+secretGroup = 0
+keywords = [
+  "private_key",
+  "BEGIN PRIVATE KEY"
+]
+
+# Regra personalizada para strings de conexão MongoDB com credenciais reais
+[[rules]]
+id = "mongodb-connection-string-with-credentials"
+description = "MongoDB connection string with credentials"
+regex = '''mongodb(?:\+srv)?:\/\/[a-zA-Z0-9_\-\.]+:[^@\s]+@[a-zA-Z0-9_\-\.]+'''
+secretGroup = 0
+keywords = [
+  "mongodb://",
+  "mongodb+srv://"
+]

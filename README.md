@@ -256,3 +256,31 @@ O projeto utiliza **Mongock** para controle de migrações do MongoDB. As migra�
 | `vehicles-indexes-v1`      | Cria índices em `brand`, `model` e `year`      |
 
 O histórico das migrações aplicadas é armazenado na coleção `mongockChangeLog` dentro do banco `specvora`.
+
+---
+
+## Pipeline DevSecOps Integrado (CI/CD)
+
+O Specvora Service adota o conceito de **Shift-Left Security**, incorporando verificações rigorosas de segurança em todas as fases do pipeline de integração e entrega contínua (**GitHub Actions**):
+
+```
+[ Git Commit / PR ]
+         │
+         ├──► 1. Secret Scanning (Gitleaks / GitGuardian)
+         ├──► 2. SCA - Análise de Dependências (Dependabot / Snyk / Trivy)
+         ├──► 3. SAST - Análise Estática de Código (Semgrep / OWASP Rules)
+         ▼
+[ 4. Build & Test (Maven + JUnit) ]
+         ▼
+[ 5. Container Security (Docker + Trivy) ]
+         ▼
+[ 6. Deploy com Quality Gate (Staging / Produção) ]
+```
+
+- **Secret Scanning**: Gitleaks configurado via `.gitleaks.toml` para barrar credenciais e chaves privadas do Firebase.
+- **SCA**: Dependabot (`.github/dependabot.yml`) e Snyk / Trivy para escanear e atualizar dependências vulneráveis no `pom.xml`.
+- **SAST**: Semgrep inspecionando o código Java contra as diretrizes do OWASP Top 10.
+- **Container Hardening**: Dockerfile multi-stage com usuário não-root (`appuser`).
+- **Quality Gates**: Bloqueio automático de release se houver vulnerabilidades críticas ou segredos expostos.
+
+Consulte a documentação técnica e arquitetural detalhada em **[DEVSECOPS.md](DEVSECOPS.md)** e **[security.md](security.md)**.

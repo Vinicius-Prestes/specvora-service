@@ -1,0 +1,23 @@
+spring:
+  data:
+    mongodb:
+     uri: ${MONGODB_URI:mongodb://localhost:27017/?authSource=admin}
+
+http:
+  cors:
+    allowed-origins:
+      - http://localhost:3000
+      - http://localhost:8080
+
+mongock:
+  migration-scan-package: br.com.specvora_service.vehicle.migration
+
+firebase:
+  credentials:
+   path: ${FIREBASE_CREDENTIALS_PATH:/path/to/firebase-key.json}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

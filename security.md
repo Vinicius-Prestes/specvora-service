@@ -222,3 +222,18 @@ O projeto implementa uma pipeline CI/CD DevSecOps completa via **GitHub Actions*
 - **Quality Gate no Deploy:** O deploy para ambientes de staging/produção só é liberado se todos os testes e scans forem aprovados com sucesso.
 
 Para a documentação completa, diagrama do pipeline e guia de execução local, consulte o arquivo [DEVSECOPS.md](DEVSECOPS.md).
+
+---
+
+### 14. Criptografia Local e Hardening de API (Segurança em Código e Infraestrutura)
+
+**Impacto da falha**
+O uso de cifras desatualizadas ou ausência de autenticação de integridade expõe dados confidenciais a adulteração e espionagem. APIs sem rate limiting inteligente e validação estrita sofrem com ataques de força bruta no login (credential stuffing) e injeções de caracteres maliciosos.
+
+**Como o projeto corrige**
+- **Criptografia Local (AES-256-GCM):** Implementada no `LocalEncryptionService` com IV randômico de 12 bytes e autenticação de integridade de 128 bits (AEAD), garantindo que dados em repouso sejam protegidos contra adulteração de bits.
+- **Proteção Anti-Brute Force (Rate Limit):** O `RateLimitingFilter` aplica um teto estrito de 5 requisições por minuto na rota de login (`/auth/login`) e 60 requisições/min nas demais rotas, com cabeçalhos IETF (`X-RateLimit-*`, `Retry-After`).
+- **Validação e Sanitização de Entrada:** Uso de `@Pattern` e normalização ativa em DTOs, impedindo NoSQL Injection, XSS e DoS de hash BCrypt.
+- **JWT Seguro:** Chave com entropia mínima garantida (256 bits), verificação estrita de `iss` e `aud`, e short-lived tokens de 2 horas.
+
+Para o relatório completo de evidências com comparativo "Antes x Depois", consulte o arquivo [SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md).

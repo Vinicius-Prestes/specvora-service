@@ -4,12 +4,14 @@ import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.interfaces.DecodedJWT;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
@@ -17,11 +19,20 @@ import java.util.Date;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * Hardening de JWT (JSON Web Token Seguro)
+ * - Assinatura forte com HMAC-SHA256 (HS256)
+ * - Validação de entropia da chave secreta (mínimo 256 bits / 32 bytes)
+ * - Verificação estrita de Issuer e Audience para impedir ataques de Confused Deputy
+ * - Proteção contra bypass de algoritmo "none"
+ * - Expiração controlada com short-lived tokens (2 horas)
+ */
 @Service
 public class JwtTokenService {
 
-    private static final String ISSUER = "specvora-service";
-    private static final String ROLES_CLAIM = "roles";
+    public static final String ISSUER = "specvora-service";
+    public static final String AUDIENCE = "specvora-api";
+    public static final String ROLES_CLAIM = "roles";
 
     @Value("${security.jwt.secret:specvora-devsecops-super-secret-jwt-key-for-fiap-2026}")
     private String jwtSecret;
@@ -29,25 +40,35 @@ public class JwtTokenService {
     @Value("${security.jwt.expiration-hours:2}")
     private long expirationHours;
 
+    private Algorithm hmacAlgorithm;
+
+    @PostConstruct
+    public void validateAndInitAlgorithm() {
+        // Validação de entropia: a chave HMAC-SHA256 deve possuir no mínimo 32 bytes (256 bits)
+        if (jwtSecret == null || jwtSecret.getBytes(StandardCharsets.UTF_8).length < 32) {
+            throw new IllegalStateException("Hardening de Segurança: A chave secreta JWT deve possuir pelo menos 256 bits (32 caracteres).");
+        }
+        this.hmacAlgorithm = Algorithm.HMAC256(jwtSecret);
+    }
+
     public String generateToken(String username, List<String> roles) {
         Instant now = Instant.now();
         Instant expiresAt = now.plus(Duration.ofHours(expirationHours));
 
-        Algorithm algorithm = Algorithm.HMAC256(jwtSecret);
-
         return JWT.create()
                 .withIssuer(ISSUER)
+                .withAudience(AUDIENCE)
                 .withSubject(username)
                 .withClaim(ROLES_CLAIM, roles != null ? roles : Collections.emptyList())
                 .withIssuedAt(Date.from(now))
                 .withExpiresAt(Date.from(expiresAt))
-                .sign(algorithm);
+                .sign(hmacAlgorithm);
     }
 
     public DecodedJWT validateToken(String token) throws JWTVerificationException {
-        Algorithm algorithm = Algorithm.HMAC256(jwtSecret);
-        return JWT.require(algorithm)
+        return JWT.require(hmacAlgorithm)
                 .withIssuer(ISSUER)
+                .withAudience(AUDIENCE)
                 .build()
                 .verify(token);
     }

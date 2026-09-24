@@ -270,6 +270,9 @@ O projeto conta com uma pipeline CI/CD automatizada no **GitHub Actions** ([`.gi
 
 Documentação completa e diagrama em: **[DEVSECOPS.md](DEVSECOPS.md)**.
 
+### Relatório de Evidências de Segurança em Código e Infraestrutura
+Para a demonstração detalhada com comparativos "Antes x Depois", testes de criptografia local (**AES-256-GCM**), proteção contra ataques de força bruta no Rate Limit e validação estrita de entrada, consulte o relatório: **[SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md)**.
+
 ---
 
 ## 7. Como Executar a Aplicação Localmente

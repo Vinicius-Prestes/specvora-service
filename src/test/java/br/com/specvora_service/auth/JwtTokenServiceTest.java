@@ -24,10 +24,11 @@ class JwtTokenServiceTest {
         jwtTokenService = new JwtTokenService();
         ReflectionTestUtils.setField(jwtTokenService, "jwtSecret", "chave-secreta-para-testes-unitarios-jwt-123456");
         ReflectionTestUtils.setField(jwtTokenService, "expirationHours", 2L);
+        jwtTokenService.validateAndInitAlgorithm();
     }
 
     @Test
-    @DisplayName("Deve gerar um token JWT válido com claims de usuário e roles")
+    @DisplayName("Deve gerar um token JWT válido com claims de usuário, audience e roles")
     void testGenerateTokenSuccess() {
         String username = "admin";
         List<String> roles = List.of("ROLE_ADMIN", "ROLE_USER");
@@ -40,6 +41,7 @@ class JwtTokenServiceTest {
         DecodedJWT decoded = jwtTokenService.validateToken(token);
         assertEquals("admin", decoded.getSubject());
         assertEquals("specvora-service", decoded.getIssuer());
+        assertTrue(decoded.getAudience().contains("specvora-api"));
         assertEquals(roles, decoded.getClaim("roles").asList(String.class));
         assertTrue(decoded.getExpiresAt().toInstant().isAfter(Instant.now()));
     }
@@ -65,6 +67,14 @@ class JwtTokenServiceTest {
         String tamperedToken = token.substring(0, token.length() - 5) + "abcde";
 
         assertThrows(JWTVerificationException.class, () -> jwtTokenService.validateToken(tamperedToken));
+    }
+
+    @Test
+    @DisplayName("Deve rejeitar inicialização com chave secreta fraca com menos de 256 bits (32 bytes)")
+    void testWeakKeyThrowsIllegalStateException() {
+        JwtTokenService weakService = new JwtTokenService();
+        ReflectionTestUtils.setField(weakService, "jwtSecret", "chave-curta");
+        assertThrows(IllegalStateException.class, weakService::validateAndInitAlgorithm);
     }
 
     @Test

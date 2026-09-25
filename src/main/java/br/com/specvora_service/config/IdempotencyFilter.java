@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -17,9 +18,11 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
+@RequiredArgsConstructor
 public class IdempotencyFilter extends OncePerRequestFilter {
 
     private static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
+    private final ErrorResponseWriter errorResponseWriter;
     private final Map<String, Long> processedKeys = new ConcurrentHashMap<>();
     private final Duration ttl = Duration.ofMinutes(10);
 
@@ -35,9 +38,8 @@ public class IdempotencyFilter extends OncePerRequestFilter {
                 cleanup(now);
 
                 if (processedKeys.putIfAbsent(key, now) != null) {
-                    response.setStatus(HttpStatus.CONFLICT.value());
-                    response.setContentType("application/json");
-                    response.getWriter().write("{\"error\":\"Duplicate request\"}");
+                    errorResponseWriter.write(response, request, HttpStatus.CONFLICT,
+                            "Requisição duplicada: a chave Idempotency-Key já foi processada recentemente");
                     return;
                 }
 

@@ -2,7 +2,7 @@
 
 ## Resumo do Projeto
 
-O **Specvora Service** é uma API REST que agrega e disponibiliza dados técnicos de veículos. Clientes autenticados consultam especificações por marca, modelo, versão, motor e ano. O serviço é construído sobre Spring Boot com MongoDB como banco de dados de documentos e Firebase Authentication como provedor de identidade. Por expor dados por meio de uma API pública com autenticação baseada em token, a superfície de ataque inclui autenticação indevida, abuso de volume, manipulação de queries e vazamento de informações — todos os pontos cobertos pelas medidas descritas abaixo.
+O **Specvora Service** é uma API REST que agrega e disponibiliza especificações técnicas de veículos. Clientes autenticados consultam dados por marca, modelo, versão, motor e ano. O serviço é construído sobre Spring Boot com MongoDB como banco de dados de documentos e autenticação JWT / Firebase Authentication. Por expor dados por meio de uma API com autenticação baseada em token, a superfície de ataque inclui autenticação indevida, abuso de volume, manipulação de queries, escalada de privilégios e vazamento de informações — todos os pontos cobertos pelas medidas descritas abaixo.
 
 ---
 
@@ -10,230 +10,214 @@ O **Specvora Service** é uma API REST que agrega e disponibiliza dados técnico
 
 ---
 
-### 1. Normalização de Input de Request
+### 1. Sanitização e Normalização de Input de Request
 
 **Impacto da falha**
-Sem normalização, entradas inconsistentes (espaços extras, maiúsculas/minúsculas mistas, caracteres de controle) podem burlar comparações de string no banco, gerar resultados incorretos ou servir de vetor para payloads maliciosos camuflados em whitespace.
+Sem normalização e sanitização, entradas inconsistentes (espaços extras, maiúsculas/minúsculas mistas, caracteres especiais e de controle) podem burlar comparações de string no banco, gerar resultados incorretos ou servir de vetor para payloads maliciosos.
 
 **Como o projeto corrige**
-O método `normalize()` em `VehicleRequestDTO` é chamado em `VehicleService.findVehicle()` antes de qualquer consulta ao banco. Cada campo de texto passa por:
+O método `sanitizeAndNormalize()` em `VehicleRequestDTO` e `VehicleUpsertDTO` é executado na camada de serviço (`VehicleService`) antes de qualquer consulta ou persistência no MongoDB:
+- Remove caracteres perigosos (`<`, `>`, `'`, `"`, `;`);
 - `trim()` — remove espaços nas extremidades;
 - `replaceAll("\\s+", " ")` — colapsa múltiplos espaços internos em um único;
-- `toLowerCase(Locale.ROOT)` — força caixa-baixa independente do locale do servidor.
-
-Campos resultantes em branco após normalização são convertidos a `null`, impedindo que strings vazias entrem na query.
+- `toLowerCase(Locale.ROOT)` — força caixa-baixa independente do locale do servidor;
+- Campos resultantes vazios são convertidos a `null`, impedindo que strings vazias entrem na query;
+- As expressões regulares de validação nos DTOs suportam caracteres acentuados via Unicode (`\\p{L}`) e validam formatos estritos (como `year` no padrão `^(19|20)\\d{2}$`).
 
 ```java
-// VehicleRequestDTO.java
-private String normalizeField(String value) {
+// VehicleRequestDTO.java / VehicleUpsertDTO.java
+private String sanitizeAndNormalize(String value) {
     if (value == null) return null;
-    String normalized = value.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
-    return normalized.isBlank() ? null : normalized;
+    String sanitized = value.replaceAll("[<>'\"\\;]", "")
+            .trim()
+            .replaceAll("\\s+", " ")
+            .toLowerCase(Locale.ROOT);
+    return sanitized.isBlank() ? null : sanitized;
 }
 ```
 
 ---
 
-### 2. Prevenção contra NoSQL Injection (SQLI)
+### 2. Prevenção contra NoSQL Injection
 
 **Impacto da falha**
-Em bancos NoSQL, a injeção de operadores (`$where`, `$gt`, `$regex`, etc.) pode contornar filtros de autenticação, exfiltrar toda a coleção ou executar JavaScript arbitrário no servidor MongoDB.
+Em bancos NoSQL, a injeção de operadores (`$where`, `$gt`, `$regex`, `$ne`, etc.) ou a manipulação arbitrária de chaves de documentos pode contornar filtros de consulta, exfiltrar coleções inteiras ou corromper índices estruturais no MongoDB.
 
 **Como o projeto corrige**
-Todo acesso ao MongoDB ocorre via `MongoTemplate` com a API `Criteria` do Spring Data. Os valores do usuário são passados como parâmetros tipados ao construtor da criteria — nunca interpolados em strings de query. Isso garante que um payload como `{ "$gt": "" }` seja tratado como um valor literal de string, não como um operador.
-
-Complementarmente, a Bean Validation (`@NotBlank`, `@Size(max=100)`) em `VehicleRequestDTO` rejeita entradas inválidas antes mesmo de chegarem à camada de repositório, reduzindo ainda mais a superfície.
+1. **Criteria Parametrizada:** Todo acesso ao MongoDB via `VehicleRepositoryImpl` utiliza `MongoTemplate` com a API `Criteria` do Spring Data. Os valores fornecidos pelo usuário são passados como parâmetros tipados aos métodos `Criteria.is()` — nunca concatenados ou interpolados em strings JSON de query.
+2. **Sanitização de Chaves em Mapas Dinâmicos:** No campo `categories` (`VehicleUpsertDTO`), a sanitização iterativa remove ou rejeita qualquer chave que contenha operadores de injeção NoSQL (`$` e `.`):
+   ```java
+   String sanitizedKey = entry.getKey().replaceAll("[\\$\\.]", "").trim();
+   ```
+3. **Bean Validation Estrita:** `@Pattern`, `@NotBlank` e `@Size(max=100)` validam os campos antes que cheguem à camada de repositório.
 
 ---
 
 ### 3. Prevenção contra XSS (Cross-Site Scripting)
 
 **Impacto da falha**
-Respostas que refletem input do usuário sem sanitização podem injetar scripts maliciosos no navegador de quem consome a API, levando a roubo de sessão, redirecionamento e execução de código no contexto do cliente.
+Respostas que refletem input do usuário sem encoding apropriado podem injetar scripts maliciosos no navegador de quem consome a API ou no painel de administração, levando a roubo de sessão e exfiltração de dados.
 
 **Como o projeto corrige**
-A API retorna exclusivamente JSON serializado pelo Jackson, sem renderização de HTML. Por consequência, não há superfície de injeção de marcação. Além disso, o Spring Security adiciona automaticamente os headers de defesa em profundidade:
-
-- `X-Content-Type-Options: nosniff` — impede que o browser interprete o content-type de forma diferente do declarado;
-- `X-Frame-Options: DENY` — bloqueia clickjacking via `<iframe>`.
-
-O Jackson realiza encoding de caracteres especiais (`<`, `>`, `&`) na serialização JSON, neutralizando qualquer tentativa de injetar tags HTML em campos de texto retornados.
+A API retorna exclusivamente JSON serializado pelo Jackson, sem renderização de HTML. O Jackson realiza o escape de caracteres de controle e a sanitização preliminar (`replaceAll("[<>'\"\\;]", "")`) remove tags antes do armazenamento. Além disso, o Spring Security injeta headers de proteção:
+- `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; object-src 'none'`;
+- `X-Content-Type-Options: nosniff`;
+- `X-Frame-Options: DENY`.
 
 ---
 
-### 4. Prevenção contra Buffer Overflow
+### 4. Prevenção contra Buffer Overflow e DoS de Payload
 
 **Impacto da falha**
-Buffer overflows permitem que atacantes sobrescrevam memória adjacente, executem código arbitrário ou causem crash na aplicação.
+Payloads gigantescos submetidos em requisições HTTP podem saturar a memória heap da JVM, degradar a CPU ou causar crash na aplicação (Denial of Service).
 
 **Como o projeto corrige**
-A JVM gerencia toda a memória com bounds checking em tempo de execução. Não existe acesso direto a ponteiros ou buffers de memória no código da aplicação. Adicionalmente, a constraint `@Size(max=100)` em cada campo do `VehicleRequestDTO` rejeita payloads excessivamente grandes antes de qualquer processamento, evitando alocações desnecessárias e garantindo um teto previsível de memória por request.
+- Limite de tamanho de requisição e swallow configurado em `application.yml`:
+  ```yaml
+  server:
+    max-http-request-header-size: 8KB
+    tomcat:
+      max-swallow-size: 256KB
+  ```
+- Constraints `@Size(max = 100)` em campos textuais e `@Size(min = 6, max = 100)` no campo `password`, impedindo o envio de senhas com dezenas de milhares de caracteres que causariam sobrecarga de CPU no algoritmo **BCrypt**.
 
 ---
 
-### 5. Prevenção contra Flooding / DDoS — Rate Limiting
+### 5. Prevenção contra Flooding / Força Bruta — Rate Limiting Inteligente
 
 **Impacto da falha**
-Sem limitação de taxa, um único cliente pode esgotar recursos de CPU, memória e conexões de banco, tornando o serviço indisponível para usuários legítimos (Denial of Service).
+Sem limitação de taxa adaptativa, ataques automatizados de força bruta contra endpoints de autenticação (*credential stuffing*) podem comprometer contas com senhas fracas, além de exaurir recursos de conexões e CPU.
 
 **Como o projeto corrige**
-O `RateLimitingFilter` (executado via `OncePerRequestFilter`) aplica o algoritmo **Token Bucket** por meio da biblioteca `bucket4j-core`. O limite padrão é de **60 requisições por minuto** por identidade:
-
-- **Usuário autenticado:** chave `user:<uid-anonimizado>` — o rate limit é aplicado por conta, impedindo que um token comprometido abuse o serviço em nome de outros usuários.
-- **Requisição anônima:** chave `ip:<endereço>` — aplica o mesmo limite por IP de origem.
-
-Quando o balde é esgotado, a resposta é `429 Too Many Requests` com body JSON, sem propagar informações internas.
-
-```java
-// RateLimitingFilter.java
-private static final Bandwidth RATE_LIMIT = Bandwidth.simple(60, Duration.ofMinutes(1));
-```
+O `RateLimitingFilter` implementa o algoritmo **Token Bucket** (via `bucket4j-core`) com diferenciação de rotas:
+1. **Rota Crítica (`POST /auth/login`):** Limite estrito anti-força bruta de **5 requisições por minuto** por cliente.
+2. **Rotas Gerais de API:** Limite de **60 requisições por minuto** por cliente.
+3. **Resolução Segura de IP:** Utiliza `request.getRemoteAddr()` (confiável sob proxy reverso) em vez de confiar cegamente em `X-Forwarded-For` arbitrário do cliente.
+4. **Proteção de Memória:** O número de baldes em memória é limitado com descarte preventivo (máximo de 10.000 entradas ativas).
+5. **Cabeçalhos Padronizados IETF:** Retorna `X-RateLimit-Limit`, `X-RateLimit-Remaining` e `Retry-After`. Em caso de estouro, retorna `429 Too Many Requests` formatado via `ErrorResponseWriter`.
 
 ---
 
-### 6. Ausência de Stacktrace Leak
+### 6. Ausência de Stacktrace Leak e Tratamento Unificado de Erros
 
 **Impacto da falha**
-Stack traces expostos em respostas de erro revelam nomes de classes internas, versões de bibliotecas, estrutura de pacotes e linhas de código — informações valiosas para um atacante mapear vulnerabilidades específicas.
+Stack traces expostos em respostas de erro revelam nomes de classes internas, versões de frameworks e detalhes do banco de dados, facilitando a elaboração de ataques direcionados.
 
 **Como o projeto corrige**
-O `GlobalExceptionHandler` centraliza o tratamento de todas as exceções com `@RestControllerAdvice`:
-
-- `VehicleNotFoundException` → `404 Not Found` com mensagem controlada.
-- `MethodArgumentNotValidException` → `400 Bad Request` apenas com os campos e mensagens de validação.
-- Qualquer outra `Exception` → `500 Internal Server Error` com a mensagem genérica `"Erro interno no servidor"`, sem qualquer detalhe da causa original.
-
-O `JwtAuthFilter` captura `FirebaseAuthException` com `catch (FirebaseAuthException ignored)` e retorna `401 Unauthorized` com body fixo `{"error":"Unauthorized"}`, sem propagar a exceção nem revelar o motivo da falha de autenticação.
+1. **Formato Unificado (`ErrorResponseDTO`):** Todas as respostas de erro da aplicação seguem a mesma estrutura conforme RFC 7807:
+   ```json
+   {
+     "timestamp": "2026-09-25T03:00:00Z",
+     "status": 404,
+     "error": "Not Found",
+     "message": "Veículo não encontrado com o ID especificado",
+     "path": "/vehicles/123"
+   }
+   ```
+2. **Serialização Centralizada (`ErrorResponseWriter`):** Os filtros de segurança (`SecurityConfig`, `JwtAuthFilter`, `RateLimitingFilter`, `IdempotencyFilter`) utilizam o componente injetado `ErrorResponseWriter` para garantir que erros 401, 403, 409 e 429 sigam o mesmo padrão de serialização do controller advice.
+3. **Mapeamento Explicito de Exceções do Spring MVC:** O `GlobalExceptionHandler` possui handlers dedicados para:
+   - `HttpMessageNotReadableException` $\to$ **400 Bad Request** (JSON malformado ou body ausente);
+   - `HttpRequestMethodNotSupportedException` $\to$ **405 Method Not Allowed** (ex.: PATCH não suportado);
+   - `HttpMediaTypeNotSupportedException` $\to$ **415 Unsupported Media Type**;
+   - `NoResourceFoundException` $\to$ **404 Not Found** (rotas inexistentes);
+   - `ResourceConflictException` $\to$ **409 Conflict** (username já cadastrado);
+   - Falhas inesperadas $\to$ **500 Internal Server Error** com mensagem genérica `"Erro interno no servidor"`, sem expor stack traces.
 
 ---
 
-### 7. Autenticação com Bearer Token JWT e RBAC (Role-Based Access Control)
+### 7. Autenticação JWT, Prevenção de Escalada de Privilégio e RBAC 3-Tier
 
 **Impacto da falha**
-Sem autenticação forte e controle de perfis de acesso, qualquer usuário anônimo ou comum poderia consultar, adulterar ou deletar dados críticos da aplicação, levando a quebra de confidencialidade e integridade.
+Endpoints públicos de registro que aceitam perfis arbitrários permitem que atacantes anônimos se auto-atribuam privilégios de administrador (Privilege Escalation).
 
 **Como o projeto corrige**
-O projeto implementa uma arquitetura robusta de autenticação e autorização via **JWT (JSON Web Token)** com suporte a **RBAC** e interoperabilidade com **Firebase Authentication**:
-
-1. **Emissão de JWT com Claims e Expiração:**
-   - O serviço possui um endpoint público `POST /auth/login` que autentica o usuário (validando a senha com hash seguro **BCrypt**) e emite um token assinado criptograficamente via HMAC-SHA256 (`HS256`).
-   - O token incorpora claims essenciais: `sub` (identificador do usuário), `roles` (lista de perfis como `ROLE_ADMIN` e `ROLE_USER`), `iss` ("specvora-service"), `iat` (emissão) e `exp` (expiração de 2 horas).
-2. **Validação e Filtro de Segurança (`JwtAuthFilter`):**
-   - Intercepta todas as requisições com header `Authorization: Bearer <token>`.
-   - Valida a integridade da assinatura, o emissor e a data de expiração via `JwtTokenService`. Caso o token seja oriundo do Firebase, o filtro também realiza a validação via Firebase Admin SDK.
-   - Popula o `SecurityContextHolder` com as autoridades apropriadas (`GrantedAuthority`).
-   - Tokens ausentes ou inválidos retornam imediatamente `401 Unauthorized`.
-3. **Controle de Acesso Baseado em Perfis (`SecurityConfig`):**
-   - **Rotas Públicas:** `/auth/login`, `/auth/register`, `/swagger-ui/**`, `/v3/api-docs/**`.
-   - **Rotas Protegidas (`ROLE_USER` ou `ROLE_ADMIN`):** Consultas de veículos (`GET /vehicles/**`) e buscas (`POST /vehicles/search`).
-   - **Rotas Administrativas (`ROLE_ADMIN`):** Criação (`POST /vehicles`), Atualização (`PUT /vehicles/**`) e Exclusão (`DELETE /vehicles/**`). Tentativas de acesso por usuários sem o devido perfil retornam `403 Forbidden` padronizado.
+1. **Controle Estrito no Cadastro (`POST /auth/register`):**
+   - O auto-registro anônimo/público atribui obrigatoriamente o perfil de menor privilégio: `ROLE_USER`.
+   - A concessão de perfis elevados (`GESTOR` ou `ADMINISTRADOR`) exige que o usuário chamador esteja autenticado no `SecurityContext` com `ROLE_ADMINISTRADOR`. Caso contrário, uma `AccessDeniedException` é lançada, resultando em **403 Forbidden**.
+2. **RBAC em 3 Níveis com `RoleHierarchy`:**
+   - **`ROLE_ADMINISTRADOR > ROLE_GESTOR > ROLE_USER`**
+   - `ROLE_USER`: Consulta de catálogo (`GET /vehicles/**`), busca técnica (`POST /vehicles/search`) e perfil (`GET /auth/me`).
+   - `ROLE_GESTOR`: Herda permissões de User + criação (`POST /vehicles`) e atualização (`PUT /vehicles/{id}`).
+   - `ROLE_ADMINISTRADOR`: Herda todas as permissões + exclusão de registros (`DELETE /vehicles/{id}`) e concessão de perfis elevados.
+3. **JWT Seguro e Validação Estrita:**
+   - Algoritmo fixo HMAC-SHA256 (`HS256`).
+   - Validação de emissor fixo (`iss: "specvora-service"`) e audiência (`aud: "specvora-api"`).
+   - Validação de expiração de 2 horas e propagação de `expiresAt` para `/auth/me`.
 
 ---
 
-### 8. Ausência de Vazamento de Dados Sensíveis
+### 8. Gestão Segura de Segredos e Chaves Criptográficas
 
 **Impacto da falha**
-Secrets, credenciais e dados pessoais hardcodados no código ou expostos em respostas podem ser extraídos de repositórios públicos, logs ou payloads de erro, comprometendo infraestrutura e privacidade.
+Hardcoding de chaves de assinatura e segredos em arquivos de configuração públicos expõe toda a segurança criptográfica a comprometimento por inspeção de repositório.
 
 **Como o projeto corrige**
-- **Variáveis de ambiente:** as credenciais sensíveis (`MONGODB_URI`, `FIREBASE_CREDENTIALS_PATH`) são lidas exclusivamente via variáveis de ambiente, nunca escritas no código-fonte ou em arquivos versionados.
-- **Respostas da API:** o `GlobalExceptionHandler` retorna apenas mensagens genéricas controladas; nenhum campo de senha, secret ou token aparece nas entidades expostas pelo `VehicleModel`.
-- **Token do usuário:** o UID do Firebase nunca é retornado em respostas nem armazenado em logs (ver seção de Anonimização).
+- **Sem Fallbacks Hardcoded:** Os valores padrão fixos de segredos foram removidos de `application.yml` (`${JWT_SECRET:}`).
+- **Geração Efêmera Criptográfica em Desenvolvimento/Testes:** Caso as variáveis de ambiente `JWT_SECRET` e `AES_SECRET` não sejam fornecidas em ambiente local, os serviços `JwtTokenService` e `LocalEncryptionService` geram dinamicamente uma chave de 256 bits via `SecureRandom` em memória, com log de advertência em nível WARN.
+- **Validação de Entropia:** Se uma chave for configurada explicitamente, ela deve possuir no mínimo 32 bytes (256 bits), rejeitando inicializações com segredos fracos.
+- **Auditoria Limpa no Gitleaks:** A remoção dos segredos permite que o `.gitleaks.toml` audite `application.yml` sem falsas exceções na allowlist.
 
 ---
 
-### 9. Idempotência — Prevenção de Requisições Duplicadas
+### 9. Idempotência com Tratamento Padronizado (HTTP 409)
 
 **Impacto da falha**
-Sem controle de idempotência, double-clicks, retries automáticos de rede ou scripts maliciosos podem submeter a mesma operação `POST` múltiplas vezes, gerando registros duplicados, cobranças duplas ou efeitos colaterais repetidos.
+Retries acidentais de rede ou cliques duplos podem duplicar a inserção de veículos ou transações no backend.
 
 **Como o projeto corrige**
-O `IdempotencyFilter` processa o header opcional `Idempotency-Key` em todas as requisições `POST`:
-
-1. A chave é composta por `<uid-anonimizado>:<idempotency-key>`, vinculando a chave ao usuário e impedindo colisão entre clientes diferentes.
-2. Na primeira recepção, a chave é registrada em um `ConcurrentHashMap` com o timestamp atual.
-3. Se a mesma chave chegar novamente dentro de uma janela de **10 minutos**, a resposta é `409 Conflict` com body `{"error":"Duplicate request"}`.
-4. Chaves de requisições que resultaram em erro (`status >= 400`) são removidas do mapa, permitindo reenvio legítimo.
-5. Limpeza automática (TTL) remove entradas expiradas a cada requisição, evitando crescimento ilimitado de memória.
+O `IdempotencyFilter` intercepta requisições `POST` contendo o cabeçalho `Idempotency-Key`:
+- Armazena a chave vinculada ao usuário em janela deslizante de 10 minutos;
+- Requisições duplicadas dentro da janela recebem resposta imediata **409 Conflict** padronizada via `ErrorResponseWriter`;
+- Requisições que falharam com erro do cliente (status $\ge 400$) têm sua chave liberada para reenvio.
 
 ---
 
-### 10. Assinatura de Requisição e Controle de Token Único
+### 10. CORS Restrito e Seguro
 
 **Impacto da falha**
-Tokens sem rastreamento de singularidade permitem que um mesmo token seja reutilizado concorrentemente por múltiplos clientes, potencialmente por um token roubado ou vazado. Volume anormal de tokens de uma mesma conta também é sinal de comprometimento.
+Políticas de CORS excessivamente permissivas (`allowedOrigins("*")` com métodos arbitrários) habilitam explorações de Cross-Origin Request Forgery a partir de sites maliciosos no browser.
 
 **Como o projeto corrige**
-O modelo de autenticação Firebase garante que cada ID Token seja **assinado criptograficamente** e tenha **expiração curta** (1 hora por padrão). A combinação dos filtros garante o comportamento desejado:
-
-- **Token único por operação:** o `IdempotencyFilter` usa a identidade do token autenticado (`authentication.getPrincipal()`) como parte da chave, portanto dois tokens diferentes de usuários diferentes não colidem; dois envios do mesmo token pelo mesmo usuário resultam em `409 Conflict`.
-- **Muitos tokens de uma pessoa = block:** o `RateLimitingFilter` rastreia requisições por `user:<uid-anonimizado>`. Independentemente de quantos tokens ativos o usuário possua, o balde de rate limit é compartilhado por UID, portanto volume excessivo — mesmo com tokens distintos válidos — resulta em `429 Too Many Requests`.
+O `CrossOriginConfig` define uma política explícita:
+- Origens permitidas parametrizadas (`http.cors.allowed-origins`, padrão `http://localhost:3000`);
+- Métodos explicitamente habilitados condizentes com a maturidade REST: `GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`;
+- Cabeçalhos de requisição permitidos: `Content-Type`, `Accept`, `Authorization`, `Idempotency-Key`;
+- Cabeçalhos expostos ao cliente: `Location`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After`, `Idempotency-Key`;
+- `maxAge(3600)` para otimização de requisições preflight.
 
 ---
 
-### 11. CORS Apropriado
+### 11. Anonimização de Identificadores (Privacidade e LGPD)
 
 **Impacto da falha**
-CORS mal configurado (ex.: `allowedOrigins("*")`) permite que qualquer site malicioso faça requisições autenticadas à API em nome de um usuário logado, explorando cookies ou tokens armazenados no browser (CSRF via CORS).
+Armazenamento e log de identificadores pessoais persistentes expõem dados sensíveis em caso de vazamento de logs.
 
 **Como o projeto corrige**
-O `CrossOriginConfig` define uma lista explícita de origens permitidas lida de `application.yml` (`http.cors.allowed-origins`). Nenhuma wildcard é usada. As demais restrições aplicadas são:
-
-- `allowedHeaders`: apenas `Content-Type`, `Accept` e `Authorization` são aceitos.
-- `allowedMethods`: apenas `GET` e `POST`, condizente com os endpoints existentes.
-- `maxAge(3600)`: o resultado do preflight é cacheado por 1 hora, reduzindo requests OPTIONS desnecessários.
-
-Qualquer origem não listada terá a request bloqueada pelo browser antes mesmo de atingir o filtro de autenticação.
+No processamento de autenticação via Firebase, o UID original é substituído pelo seu hash SHA-256 determinístico antes de ser persistido no `SecurityContextHolder`, impedindo a exposição do identificador primário do usuário em logs ou traces.
 
 ---
 
-### 12. Anonimização do Usuário
+### 12. Criptografia Local Ativa (AES-256-GCM)
 
 **Impacto da falha**
-Armazenar ou logar o UID original do Firebase expõe um identificador único e persistente do usuário. Em caso de vazamento de logs, contexto de segurança ou dumps de memória, esse dado pode ser cruzado com outras fontes para re-identificar o indivíduo, violando princípios de privacidade (LGPD/GDPR).
+Dados sensíveis armazenados em repouso sem criptografia autenticada estão sujeitos a vazamentos e ataques de adulteração de bits (*bit-flipping*).
 
 **Como o projeto corrige**
-No `JwtAuthFilter`, após validação do token, o UID original é **substituído pelo seu hash SHA-256** antes de ser armazenado no `SecurityContext`:
-
-```java
-// JwtAuthFilter.java
-private String anonymizeUid(String uid) {
-    MessageDigest digest = MessageDigest.getInstance("SHA-256");
-    byte[] hash = digest.digest(uid.getBytes(StandardCharsets.UTF_8));
-    return HexFormat.of().formatHex(hash);
-}
-```
-
-O hash é determinístico — o mesmo UID sempre produz o mesmo hash — o que permite rastreamento de requisições do mesmo usuário sem expor o identificador original. O UID nunca é propagado além do filtro de autenticação.
+O `LocalEncryptionService` implementa criptografia autenticada **AES-256-GCM (AEAD)**:
+- Utiliza vetor de inicialização (IV) randômico de 12 bytes gerado por `SecureRandom` a cada cifragem;
+- Tag de autenticação de 128 bits;
+- **Aplicação Real em Produção:** Em `AuthService`, o serviço é utilizado para criptografar em tempo real registros de auditoria sensíveis de telemetria dos usuários (`encryptedAuditRecord`), garantindo proteção efetiva de dados em repouso.
 
 ---
 
-### 13. Pipeline DevSecOps Integrado (Shift-Left Security)
-
-**Impacto da falha**
-Sem um pipeline automatizado de segurança, vulnerabilidades em bibliotecas terceiras, erros de programação (OWASP Top 10) e credenciais acidentalmente commitadas só seriam detectadas após incidentes em produção ou auditorias manuais tardias, elevando drasticamente o risco e o custo de correção.
+### 13. Pipeline DevSecOps Integrado (Shift-Left)
 
 **Como o projeto corrige**
-O projeto implementa uma pipeline CI/CD DevSecOps completa via **GitHub Actions** (`.github/workflows/devsecops.yml`), garantindo que nenhum artefato seja publicado sem validação prévia de segurança (*Quality Gates*):
-- **Secret Scanning (Gitleaks & GitGuardian):** Analisa cada commit em busca de chaves Firebase e strings de conexão expostas, utilizando regras em `.gitleaks.toml`.
-- **SCA - Software Composition Analysis (Dependabot & Snyk / Trivy):** Escaneia o `pom.xml` contra CVEs conhecidas e automatiza a abertura de PRs para atualização de dependências vulneráveis via `.github/dependabot.yml`.
-- **SAST - Static Application Security Testing (Semgrep & SonarQube):** Analisa o código-fonte Java contra os padrões do OWASP Top 10 e vulnerabilidades de injeção/tratamento.
-- **Container Hardening (Docker & Trivy):** Constrói a imagem Docker baseada em JRE 21 com usuário não-root (`appuser`) e valida ausência de CVEs no sistema operacional.
-- **Quality Gate no Deploy:** O deploy para ambientes de staging/produção só é liberado se todos os testes e scans forem aprovados com sucesso.
+O pipeline automatizado no GitHub Actions ([`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)) assegura que nenhum artefato vulnerável atinja os ambientes da Ford:
+- **Secret Scanning (Gitleaks):** Bloqueio imediato (`exit-code: 1`) contra commits contendo chaves ou URIs expostas.
+- **SCA (Dependabot & Trivy FS):** Monitoramento contínuo de CVEs em dependências do Maven, bloqueio de severidades críticas/altas (`exit-code: 1`) e exportação SARIF para a aba de segurança do GitHub.
+- **SAST (Semgrep & SonarCloud):** Análise estática contra OWASP Top 10 e padrões Java com `--error`.
+- **IaC & Container Security (Trivy Config & Trivy Image):** Verificação de configurações de containers e escaneamento da imagem Docker multi-stage sem root (`appuser` 10001).
+- **Evidências de Teste:** Upload automático dos relatórios de teste do Maven Surefire como artefato do build.
 
-Para a documentação completa, diagrama do pipeline e guia de execução local, consulte o arquivo [DEVSECOPS.md](DEVSECOPS.md).
-
----
-
-### 14. Criptografia Local e Hardening de API (Segurança em Código e Infraestrutura)
-
-**Impacto da falha**
-O uso de cifras desatualizadas ou ausência de autenticação de integridade expõe dados confidenciais a adulteração e espionagem. APIs sem rate limiting inteligente e validação estrita sofrem com ataques de força bruta no login (credential stuffing) e injeções de caracteres maliciosos.
-
-**Como o projeto corrige**
-- **Criptografia Local (AES-256-GCM):** Implementada no `LocalEncryptionService` com IV randômico de 12 bytes e autenticação de integridade de 128 bits (AEAD), garantindo que dados em repouso sejam protegidos contra adulteração de bits.
-- **Proteção Anti-Brute Force (Rate Limit):** O `RateLimitingFilter` aplica um teto estrito de 5 requisições por minuto na rota de login (`/auth/login`) e 60 requisições/min nas demais rotas, com cabeçalhos IETF (`X-RateLimit-*`, `Retry-After`).
-- **Validação e Sanitização de Entrada:** Uso de `@Pattern` e normalização ativa em DTOs, impedindo NoSQL Injection, XSS e DoS de hash BCrypt.
-- **JWT Seguro:** Chave com entropia mínima garantida (256 bits), verificação estrita de `iss` e `aud`, e short-lived tokens de 2 horas.
-
-Para o relatório completo de evidências com comparativo "Antes x Depois", consulte o arquivo [SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md).
+Para o detalhamento do fluxo corporativo no ecossistema Ford e arquitetura MQTT/TLS, consulte [DEVSECOPS.md](DEVSECOPS.md). Para os testes e comparativos de código "Antes x Depois", consulte [SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md).

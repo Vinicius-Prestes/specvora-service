@@ -1,30 +1,44 @@
+# syntax=docker/dockerfile:1.7
 # =========================================================================
-# Multi-stage Dockerfile seguro para DevSecOps
-# 1. Menor superfície de ataque (apenas JRE necessário)
-# 2. Execução como usuário não-root (princípio do menor privilégio)
+# Multi-stage Dockerfile Seguro para DevSecOps
+# 1. Estágio de Build (JDK 21) isolado do ambiente final
+# 2. Estágio de Runtime enxuto (JRE 21) sem ferramentas de compilação
+# 3. Usuário não-root (UID 10001) para menor privilégio
+# 4. Entrypoint em forma exec (PID 1 direto para graceful shutdown)
+# 5. Healthcheck nativo
 # =========================================================================
 
-# Estágio de Runtime Seguro
+# Estágio 1: Build
+FROM eclipse-temurin:21-jdk-jammy AS builder
+WORKDIR /build
+
+# Cache de dependências Maven
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN chmod +x mvnw && ./mvnw -B dependency:go-offline
+
+# Compilação e empacotamento
+COPY src/ src/
+RUN ./mvnw -B clean package -DskipTests
+
+# Estágio 2: Runtime Seguro
 FROM eclipse-temurin:21-jre-jammy
 
 # Criar grupo e usuário sem privilégios administrativos
-RUN groupadd -r appgroup && useradd -r -g appgroup -u 10001 appuser
+RUN groupadd -r appgroup && useradd -r -g appgroup -u 10001 -s /usr/sbin/nologin appuser
 
 WORKDIR /app
 
-# Copiar apenas o arquivo JAR gerado no build
-COPY target/*.jar app.jar
+# Copiar o JAR gerado no estágio builder com propriedade do appuser
+COPY --from=builder --chown=10001:10001 /build/target/*.jar app.jar
 
-# Ajustar propriedade dos arquivos para o usuário seguro
-RUN chown -R appuser:appgroup /app
+USER 10001
 
-# Executar como usuário não-root
-USER appuser
-
-# Expor porta da aplicação (definida no Spring Boot)
 EXPOSE 8080
 
-# Configurações de JVM seguras e otimizadas para containers
-ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"
+ENV JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/./urandom"
 
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/v3/api-docs || exit 1
+
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

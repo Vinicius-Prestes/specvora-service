@@ -2,12 +2,6 @@
 .github
 .idea
 *.iml
-target/classes
-target/test-classes
-target/generated-sources
-src/
-mvnw
-mvnw.cmd
-.mvn/
-Dockerfile
+target/
+secrets/
 *.md

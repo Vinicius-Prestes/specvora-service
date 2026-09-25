@@ -7,6 +7,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -15,7 +16,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -23,20 +23,22 @@ import java.util.concurrent.ConcurrentHashMap;
  * Hardening de API — Rate Limiting Inteligente com Token Bucket
  * - Limite diferenciado contra Brute Force em /auth/login (5 req/min)
  * - Limite geral de API (60 req/min)
+ * - Resolução segura de IP (prevenção contra spoofing de X-Forwarded-For)
  * - Inclusão de headers padronizados IETF (X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After)
- * - Resposta em formato padronizado ErrorResponseDTO em caso de 429 Too Many Requests
+ * - Resposta em formato padronizado ErrorResponseDTO via ErrorResponseWriter
  */
 @Component
+@RequiredArgsConstructor
 public class RateLimitingFilter extends OncePerRequestFilter {
 
-    // Limite padrão para consumo geral da API (60 requisições por minuto)
-    private static final Bandwidth GENERAL_LIMIT = Bandwidth.simple(60, Duration.ofMinutes(1));
+    private final ErrorResponseWriter errorResponseWriter;
 
-    // Limite estrito contra ataques de Força Bruta e Credential Stuffing em /auth/login (5 tentativas por minuto)
+    private static final Bandwidth GENERAL_LIMIT = Bandwidth.simple(60, Duration.ofMinutes(1));
     private static final Bandwidth LOGIN_BRUTE_FORCE_LIMIT = Bandwidth.simple(5, Duration.ofMinutes(1));
 
     private final Map<String, Bucket> generalBuckets = new ConcurrentHashMap<>();
     private final Map<String, Bucket> loginBuckets = new ConcurrentHashMap<>();
+    private static final int MAX_BUCKETS = 10_000;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -50,11 +52,13 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         long limitCapacity;
 
         if (isLoginRoute) {
+            checkAndCleanupMap(loginBuckets);
             bucket = loginBuckets.computeIfAbsent(clientKey, k -> Bucket.builder()
                     .addLimit(LOGIN_BRUTE_FORCE_LIMIT)
                     .build());
             limitCapacity = 5;
         } else {
+            checkAndCleanupMap(generalBuckets);
             bucket = generalBuckets.computeIfAbsent(clientKey, k -> Bucket.builder()
                     .addLimit(GENERAL_LIMIT)
                     .build());
@@ -70,24 +74,12 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         } else {
             long waitForRefillSeconds = Math.max(1, probe.getNanosToWaitForRefill() / 1_000_000_000);
 
-            response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
-            response.setContentType("application/json");
-            response.setCharacterEncoding("UTF-8");
             response.setHeader("X-RateLimit-Limit", String.valueOf(limitCapacity));
             response.setHeader("X-RateLimit-Remaining", "0");
             response.setHeader("Retry-After", String.valueOf(waitForRefillSeconds));
 
-            String errorJson = String.format("""
-                    {
-                        "timestamp": "%s",
-                        "status": 429,
-                        "error": "Too Many Requests",
-                        "message": "Taxa limite de requisições excedida. Tente novamente em %d segundos.",
-                        "path": "%s"
-                    }
-                    """, Instant.now(), waitForRefillSeconds, uri);
-
-            response.getWriter().write(errorJson);
+            errorResponseWriter.write(response, request, HttpStatus.TOO_MANY_REQUESTS,
+                    "Taxa limite de requisições excedida. Tente novamente em " + waitForRefillSeconds + " segundos.");
         }
     }
 
@@ -97,12 +89,14 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return "user:" + auth.getPrincipal();
         }
 
-        // Suporte a proxy reverso / load balancer para extração segura do IP
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
-            return "ip:" + xForwardedFor.split(",")[0].trim();
-        }
-
+        // Prevenção contra spoofing de X-Forwarded-For: usa o IP direto de conexão do socket
+        // Quando há proxy confiável reverso, a estratégia do servidor de aplicação deve ser configurada
         return "ip:" + request.getRemoteAddr();
+    }
+
+    private void checkAndCleanupMap(Map<String, Bucket> map) {
+        if (map.size() > MAX_BUCKETS) {
+            map.clear(); // Proteção simples contra esgotamento de memória por enxurrada de IPs falsos
+        }
     }
 }

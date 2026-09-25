@@ -26,10 +26,11 @@ public class CrossOriginConfig {
                 List<String> origins = properties.allowedOrigins;
                 registry.addMapping("/**")
                         .allowedOrigins(origins.toArray(new String[0]))
-                        .allowedHeaders("Content-Type", "Accept", "Authorization")
-                        .allowedMethods("GET", "POST")
+                        .allowedHeaders("Content-Type", "Accept", "Authorization", "Idempotency-Key")
+                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                        .exposedHeaders("Location", "X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After")
                         .maxAge(3600);
-                log.info("CORS: Allowing origins {}",
+                log.info("CORS: Allowing origins {} with methods GET, POST, PUT, DELETE, OPTIONS",
                         String.join(" | ", properties.allowedOrigins));
             }
         };

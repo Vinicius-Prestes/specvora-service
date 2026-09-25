@@ -109,7 +109,7 @@ class AuthControllerTest {
                 .roles(List.of("ROLE_USER"))
                 .build();
 
-        when(authService.register(any(RegisterRequestDTO.class))).thenReturn(responseDTO);
+        when(authService.register(any(RegisterRequestDTO.class), any())).thenReturn(responseDTO);
 
         RegisterRequestDTO request = RegisterRequestDTO.builder()
                 .username("novo_user")

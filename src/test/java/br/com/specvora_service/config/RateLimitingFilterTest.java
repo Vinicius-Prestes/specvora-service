@@ -1,5 +1,6 @@
 package br.com.specvora_service.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,7 +22,8 @@ class RateLimitingFilterTest {
 
     @BeforeEach
     void setUp() {
-        rateLimitingFilter = new RateLimitingFilter();
+        ErrorResponseWriter writer = new ErrorResponseWriter();
+        rateLimitingFilter = new RateLimitingFilter(writer);
         filterChain = mock(FilterChain.class);
     }
 

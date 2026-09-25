@@ -18,23 +18,28 @@ import org.springframework.web.bind.annotation.*;
 public interface AuthApi {
 
     @Operation(summary = "Realiza login e emite token JWT com roles e expiração",
+            security = {},
             responses = {
                     @ApiResponse(responseCode = "200", description = "Autenticação bem-sucedida"),
                     @ApiResponse(responseCode = "400", description = "Parâmetros inválidos"),
-                    @ApiResponse(responseCode = "401", description = "Credenciais inválidas")
+                    @ApiResponse(responseCode = "401", description = "Credenciais inválidas"),
+                    @ApiResponse(responseCode = "429", description = "Muitas tentativas (proteção anti-brute force)")
             })
     @PostMapping("/login")
     ResponseEntity<LoginResponseDTO> login(@Valid @RequestBody LoginRequestDTO dto);
 
-    @Operation(summary = "Cadastra novo usuário (USER ou ADMIN)",
+    @Operation(summary = "Cadastra novo usuário (Auto-registro cria perfil USER; perfis elevados requerem ROLE_ADMINISTRADOR)",
+            security = {},
             responses = {
                     @ApiResponse(responseCode = "201", description = "Usuário cadastrado com sucesso"),
-                    @ApiResponse(responseCode = "400", description = "Dados inválidos ou usuário já existente")
+                    @ApiResponse(responseCode = "400", description = "Dados inválidos"),
+                    @ApiResponse(responseCode = "403", description = "Tentativa não autorizada de concessão de perfil elevado"),
+                    @ApiResponse(responseCode = "409", description = "Username já em uso")
             })
     @PostMapping("/register")
-    ResponseEntity<UserResponseDTO> register(@Valid @RequestBody RegisterRequestDTO dto);
+    ResponseEntity<UserResponseDTO> register(@Valid @RequestBody RegisterRequestDTO dto, Authentication authentication);
 
-    @Operation(summary = "Retorna os dados e perfis do usuário autenticado no token atual",
+    @Operation(summary = "Retorna os dados, perfis e expiração do usuário autenticado no token atual",
             security = @SecurityRequirement(name = "bearerAuth"),
             responses = {
                     @ApiResponse(responseCode = "200", description = "Perfil recuperado com sucesso"),

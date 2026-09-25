@@ -1,7 +1,10 @@
 package br.com.specvora_service.auth;
 
 import br.com.specvora_service.auth.service.JwtTokenService;
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.exceptions.JWTVerificationException;
+import com.auth0.jwt.exceptions.TokenExpiredException;
 import com.auth0.jwt.interfaces.DecodedJWT;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -10,6 +13,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
+import java.util.Date;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,11 +22,12 @@ import static org.junit.jupiter.api.Assertions.*;
 class JwtTokenServiceTest {
 
     private JwtTokenService jwtTokenService;
+    private static final String TEST_SECRET = "chave-secreta-para-testes-unitarios-jwt-123456";
 
     @BeforeEach
     void setUp() {
         jwtTokenService = new JwtTokenService();
-        ReflectionTestUtils.setField(jwtTokenService, "jwtSecret", "chave-secreta-para-testes-unitarios-jwt-123456");
+        ReflectionTestUtils.setField(jwtTokenService, "jwtSecret", TEST_SECRET);
         ReflectionTestUtils.setField(jwtTokenService, "expirationHours", 2L);
         jwtTokenService.validateAndInitAlgorithm();
     }
@@ -31,7 +36,7 @@ class JwtTokenServiceTest {
     @DisplayName("Deve gerar um token JWT válido com claims de usuário, audience e roles")
     void testGenerateTokenSuccess() {
         String username = "admin";
-        List<String> roles = List.of("ROLE_ADMIN", "ROLE_USER");
+        List<String> roles = List.of("ROLE_ADMINISTRADOR", "ROLE_GESTOR", "ROLE_USER");
 
         String token = jwtTokenService.generateToken(username, roles);
 
@@ -70,11 +75,32 @@ class JwtTokenServiceTest {
     }
 
     @Test
+    @DisplayName("Deve rejeitar token com data de expiração ultrapassada")
+    void testExpiredTokenIsRejected() {
+        String expiredToken = JWT.create()
+                .withIssuer(JwtTokenService.ISSUER)
+                .withAudience(JwtTokenService.AUDIENCE)
+                .withSubject("usuario_expirado")
+                .withExpiresAt(Date.from(Instant.now().minusSeconds(120)))
+                .sign(Algorithm.HMAC256(TEST_SECRET));
+
+        assertThrows(TokenExpiredException.class, () -> jwtTokenService.validateToken(expiredToken));
+    }
+
+    @Test
     @DisplayName("Deve rejeitar inicialização com chave secreta fraca com menos de 256 bits (32 bytes)")
     void testWeakKeyThrowsIllegalStateException() {
         JwtTokenService weakService = new JwtTokenService();
         ReflectionTestUtils.setField(weakService, "jwtSecret", "chave-curta");
         assertThrows(IllegalStateException.class, weakService::validateAndInitAlgorithm);
+    }
+
+    @Test
+    @DisplayName("Deve inicializar com chave efêmera aleatória segura quando segredo não for informado")
+    void testInitWithEmptySecretGeneratesEphemeralKey() {
+        JwtTokenService ephemeralService = new JwtTokenService();
+        ReflectionTestUtils.setField(ephemeralService, "jwtSecret", "");
+        assertDoesNotThrow(ephemeralService::validateAndInitAlgorithm);
     }
 
     @Test

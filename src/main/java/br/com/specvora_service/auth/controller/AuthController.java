@@ -23,8 +23,8 @@ public class AuthController implements AuthApi {
     }
 
     @Override
-    public ResponseEntity<UserResponseDTO> register(RegisterRequestDTO dto) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(dto));
+    public ResponseEntity<UserResponseDTO> register(RegisterRequestDTO dto, Authentication authentication) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(dto, authentication));
     }
 
     @Override

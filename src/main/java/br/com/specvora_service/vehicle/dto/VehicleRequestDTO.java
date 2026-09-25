@@ -21,25 +21,25 @@ public class VehicleRequestDTO {
 
     @NotBlank(message = "Marca é obrigatória")
     @Size(max = 100, message = "Marca deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Marca contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Marca contém caracteres inválidos")
     @Schema(description = "Marca do veículo", example = "Ford")
     private String brand;
 
     @NotBlank(message = "Modelo é obrigatório")
     @Size(max = 100, message = "Modelo deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Modelo contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Modelo contém caracteres inválidos")
     @Schema(description = "Modelo do veículo", example = "Nova Ranger 4x4")
     private String model;
 
     @NotBlank(message = "Versão é obrigatória")
     @Size(max = 100, message = "Versão deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Versão contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Versão contém caracteres inválidos")
     @Schema(description = "Versão do veículo", example = "XLT")
     private String version;
 
     @NotBlank(message = "Motor é obrigatório")
     @Size(max = 100, message = "Motor deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Motorização contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Motorização contém caracteres inválidos")
     @Schema(description = "Motorização", example = "3.0 V6 - 24V")
     private String engine;
 
@@ -62,6 +62,14 @@ public class VehicleRequestDTO {
         engine = sanitizeAndNormalize(engine);
         year = sanitizeAndNormalize(year);
         vehicleCategory = sanitizeAndNormalize(vehicleCategory);
+
+        if (categories != null) {
+            for (String key : categories.keySet()) {
+                if (key == null || key.contains("$") || key.contains(".")) {
+                    throw new IllegalArgumentException("Chave inválida na especificação técnica: " + key);
+                }
+            }
+        }
     }
 
     private String sanitizeAndNormalize(String value) {
@@ -69,7 +77,6 @@ public class VehicleRequestDTO {
             return null;
         }
 
-        // Sanitização contra caracteres de controle, injeção de tags HTML/scripts e whitespace excessivo
         String sanitized = value.replaceAll("[<>'\"\\;]", "")
                 .trim()
                 .replaceAll("\\s+", " ")

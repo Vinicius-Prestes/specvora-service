@@ -28,6 +28,9 @@ class VehicleServiceTest {
     @Mock
     private VehicleRepository vehicleRepository;
 
+    @Mock
+    private br.com.specvora_service.security.SecurityAuditLogger securityAuditLogger;
+
     @InjectMocks
     private VehicleService vehicleService;
 

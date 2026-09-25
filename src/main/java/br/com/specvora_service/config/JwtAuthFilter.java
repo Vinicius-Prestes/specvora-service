@@ -11,11 +11,11 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -25,12 +25,26 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 
 @Component
 @RequiredArgsConstructor
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtTokenService jwtTokenService;
+    private final ErrorResponseWriter errorResponseWriter;
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getServletPath();
+        if (path == null) {
+            path = request.getRequestURI();
+        }
+        return path.equals("/auth/login")
+                || path.equals("/auth/register")
+                || path.startsWith("/swagger-ui")
+                || path.startsWith("/v3/api-docs");
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -45,12 +59,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String token = authHeader.substring(7).trim();
 
-        // 1. Tenta validar via JWT nativo com claims e roles (ROLE_ADMIN, ROLE_USER)
+        // 1. Validação via JWT nativo com claims, audience e roles (ADMINISTRADOR, GESTOR, USER)
         try {
             Authentication auth = jwtTokenService.getAuthentication(token);
             if (auth != null) {
                 if (auth instanceof UsernamePasswordAuthenticationToken userAuth) {
-                    userAuth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    userAuth.setDetails(Map.of(
+                            "expiresAt", jwtTokenService.getExpiration(token).toString(),
+                            "remoteAddress", request.getRemoteAddr()
+                    ));
                 }
                 SecurityContextHolder.getContext().setAuthentication(auth);
                 filterChain.doFilter(request, response);
@@ -60,7 +77,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             // Token não é JWT nativo válido; tentará validar via Firebase caso ativo
         }
 
-        // 2. Se Firebase estiver configurado, tenta validar via Firebase Authentication SDK
+        // 2. Validação via Firebase Authentication SDK (se configurado)
         if (!FirebaseApp.getApps().isEmpty()) {
             try {
                 FirebaseToken firebaseToken = FirebaseAuth.getInstance().verifyIdToken(token);
@@ -72,7 +89,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                                     null,
                                     List.of(new SimpleGrantedAuthority("ROLE_USER"))
                             );
-                    auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    auth.setDetails(Map.of(
+                            "expiresAt", "firebase-managed",
+                            "remoteAddress", request.getRemoteAddr()
+                    ));
                     SecurityContextHolder.getContext().setAuthentication(auth);
                     filterChain.doFilter(request, response);
                     return;
@@ -82,17 +102,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
 
-        // 3. Se nenhuma validação teve sucesso, rejeita a requisição imediatamente
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
-        response.getWriter().write("""
-                {
-                    "status": 401,
-                    "error": "Unauthorized",
-                    "message": "Token JWT inválido, expirado ou não reconhecido"
-                }
-                """);
+        // 3. Rejeição com formato padronizado ErrorResponseDTO
+        errorResponseWriter.write(response, request, HttpStatus.UNAUTHORIZED,
+                "Token JWT inválido, expirado ou não reconhecido");
     }
 
     private String anonymizeUid(String uid) {

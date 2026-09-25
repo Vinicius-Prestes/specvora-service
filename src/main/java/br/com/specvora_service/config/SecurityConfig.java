@@ -1,10 +1,13 @@
 package br.com.specvora_service.config;
 
-import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -22,6 +25,17 @@ public class SecurityConfig {
     private final JwtAuthFilter jwtAuthFilter;
     private final IdempotencyFilter idempotencyFilter;
     private final RateLimitingFilter rateLimitingFilter;
+    private final ErrorResponseWriter errorResponseWriter;
+
+    @Bean
+    public static RoleHierarchy roleHierarchy() {
+        return RoleHierarchyImpl.fromHierarchy("""
+                ROLE_ADMINISTRADOR > ROLE_GESTOR
+                ROLE_GESTOR > ROLE_USER
+                ROLE_ADMIN > ROLE_USER
+                ROLE_ADMINISTRADOR > ROLE_ADMIN
+                """);
+    }
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -30,7 +44,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                // Hardening de Cabeçalhos HTTP de Segurança
+                // Hardening de Cabeçalhos HTTP de Segurança (OWASP Secure Headers)
                 .headers(headers -> headers
                         .contentSecurityPolicy(csp -> csp.policyDirectives(
                                 "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'"))
@@ -43,7 +57,7 @@ public class SecurityConfig {
                         .permissionsPolicy(permissions -> permissions.policy("geolocation=(), microphone=(), camera=()"))
                 )
                 .authorizeHttpRequests(auth -> auth
-                        // 1. Endpoints Públicos (Swagger, OpenAPI e Autenticação/Registro)
+                        // 1. Endpoints Públicos
                         .requestMatchers(
                                 "/v3/api-docs/**",
                                 "/swagger-ui/**",
@@ -52,46 +66,28 @@ public class SecurityConfig {
                                 "/auth/register"
                         ).permitAll()
 
-                        // 2. Operações administrativas (CRUD de Veículos - POST, PUT, DELETE) exclusivas para ROLE_ADMIN
-                        .requestMatchers(HttpMethod.POST, "/vehicles").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/vehicles/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/vehicles/**").hasRole("ADMIN")
+                        // 2. Operações de exclusão (Exclusivas para ADMINISTRADOR)
+                        .requestMatchers(HttpMethod.DELETE, "/vehicles/**").hasAnyRole("ADMINISTRADOR", "ADMIN")
 
-                        // 3. Consultas e buscas de veículos permitidas para usuários autenticados (USER ou ADMIN)
-                        .requestMatchers(HttpMethod.GET, "/vehicles/**").hasAnyRole("USER", "ADMIN")
-                        .requestMatchers(HttpMethod.POST, "/vehicles/search").hasAnyRole("USER", "ADMIN")
+                        // 3. Operações de escrita/modificação (GESTOR e ADMINISTRADOR)
+                        .requestMatchers(HttpMethod.POST, "/vehicles").hasAnyRole("GESTOR", "ADMINISTRADOR", "ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/vehicles/**").hasAnyRole("GESTOR", "ADMINISTRADOR", "ADMIN")
+
+                        // 4. Consultas e leituras (USER, GESTOR e ADMINISTRADOR)
+                        .requestMatchers(HttpMethod.GET, "/vehicles/**").hasAnyRole("USER", "GESTOR", "ADMINISTRADOR", "ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/vehicles/search").hasAnyRole("USER", "GESTOR", "ADMINISTRADOR", "ADMIN")
                         .requestMatchers("/auth/me").authenticated()
 
-                        // Qualquer outra rota exige autenticação
+                        // Demais rotas exigem autenticação
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(ex -> ex
-                        // Customização do retorno 401 Unauthorized
-                        .authenticationEntryPoint((request, response, authException) -> {
-                            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                            response.setContentType("application/json");
-                            response.setCharacterEncoding("UTF-8");
-                            response.getWriter().write("""
-                                    {
-                                        "status": 401,
-                                        "error": "Unauthorized",
-                                        "message": "Acesso não autorizado: credenciais ausentes ou token inválido"
-                                    }
-                                    """);
-                        })
-                        // Customização do retorno 403 Forbidden (RBAC - Role Based Access Control)
-                        .accessDeniedHandler((request, response, accessDeniedException) -> {
-                            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                            response.setContentType("application/json");
-                            response.setCharacterEncoding("UTF-8");
-                            response.getWriter().write("""
-                                    {
-                                        "status": 403,
-                                        "error": "Forbidden",
-                                        "message": "Acesso proibido: seu perfil não possui permissão para executar esta operação"
-                                    }
-                                    """);
-                        })
+                        .authenticationEntryPoint((request, response, authException) ->
+                                errorResponseWriter.write(response, request, HttpStatus.UNAUTHORIZED,
+                                        "Acesso não autorizado: credenciais ausentes ou token inválido"))
+                        .accessDeniedHandler((request, response, accessDeniedException) ->
+                                errorResponseWriter.write(response, request, HttpStatus.FORBIDDEN,
+                                        "Acesso proibido: seu perfil não possui permissão para executar esta operação"))
                 )
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .formLogin(AbstractHttpConfigurer::disable)
@@ -100,5 +96,27 @@ public class SecurityConfig {
                 .addFilterAfter(rateLimitingFilter, IdempotencyFilter.class);
 
         return http.build();
+    }
+
+    // Evita registro duplicado dos filtros customizados no container servlet do Spring Boot
+    @Bean
+    public FilterRegistrationBean<JwtAuthFilter> disableJwtRegistration(JwtAuthFilter filter) {
+        FilterRegistrationBean<JwtAuthFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
+    public FilterRegistrationBean<IdempotencyFilter> disableIdempotencyRegistration(IdempotencyFilter filter) {
+        FilterRegistrationBean<IdempotencyFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
+    @Bean
+    public FilterRegistrationBean<RateLimitingFilter> disableRateLimitingRegistration(RateLimitingFilter filter) {
+        FilterRegistrationBean<RateLimitingFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
     }
 }

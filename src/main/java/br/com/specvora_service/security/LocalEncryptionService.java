@@ -1,6 +1,7 @@
 package br.com.specvora_service.security;
 
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +22,7 @@ import java.util.HexFormat;
  * Padrão: AES-256-GCM (Authenticated Encryption with Associated Data - AEAD)
  * Garante confidencialidade e autenticidade/integridade contra adulteração de dados.
  */
+@Slf4j
 @Service
 public class LocalEncryptionService {
 
@@ -29,7 +31,7 @@ public class LocalEncryptionService {
     private static final int GCM_IV_LENGTH_BYTES = 12; // 96 bits recomendado pelo NIST
     private static final int GCM_TAG_LENGTH_BITS = 128; // Tag de integridade de 128 bits
 
-    @Value("${security.crypto.aes-secret:specvora-aes-256-local-encryption-key-32b!}")
+    @Value("${security.crypto.aes-secret:}")
     private String rawSecret;
 
     private SecretKey secretKey;
@@ -37,9 +39,15 @@ public class LocalEncryptionService {
 
     @PostConstruct
     public void init() {
-        // Deriva uma chave de exatamente 256 bits (32 bytes) a partir da chave configurada
-        byte[] keyBytes = deriveKey256(rawSecret);
-        this.secretKey = new SecretKeySpec(keyBytes, ENCRYPTION_ALGORITHM);
+        if (rawSecret == null || rawSecret.trim().isEmpty()) {
+            log.warn("AVISO DE SEGURANÇA: AES_SECRET não configurado via variável de ambiente. Gerando chave randômica efêmera segura de 256 bits.");
+            byte[] randomKey = new byte[32];
+            secureRandom.nextBytes(randomKey);
+            this.secretKey = new SecretKeySpec(randomKey, ENCRYPTION_ALGORITHM);
+        } else {
+            byte[] keyBytes = deriveKey256(rawSecret);
+            this.secretKey = new SecretKeySpec(keyBytes, ENCRYPTION_ALGORITHM);
+        }
     }
 
     /**

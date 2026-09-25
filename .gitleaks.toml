@@ -12,16 +12,11 @@ paths = [
   '''target/''',
   '''mvnw''',
   '''mvnw\.cmd''',
-  '''pom\.xml$''',
-  '''README\.md$''',
-  '''security\.md$''',
-  '''DEVSECOPS\.md$''',
-  '''application\.yml$'''
+  '''pom\.xml$'''
 ]
 regexes = [
   '''mongodb://localhost:27017''',
-  '''specvora:fiap@localhost''',
-  '''specvora-devsecops-super-secret-jwt-key'''
+  '''specvora:fiap@localhost'''
 ]
 
 # Regra personalizada para proteger Service Account Keys do Firebase / Google Cloud

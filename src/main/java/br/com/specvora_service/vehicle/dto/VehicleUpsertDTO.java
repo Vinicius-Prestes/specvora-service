@@ -11,6 +11,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.Locale;
+import java.util.Map;
 
 @Data
 @Builder
@@ -21,25 +22,25 @@ public class VehicleUpsertDTO {
 
     @NotBlank(message = "Marca é obrigatória")
     @Size(max = 100, message = "Marca deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Marca contém caracteres inválidos")
-    @Schema(description = "Marca do veículo", example = "Ford")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Marca contém caracteres inválidos")
+    @Schema(description = "Marca do veículo", example = "Citroën")
     private String brand;
 
     @NotBlank(message = "Modelo é obrigatório")
     @Size(max = 100, message = "Modelo deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Modelo contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Modelo contém caracteres inválidos")
     @Schema(description = "Modelo do veículo", example = "Nova Ranger 4x4")
     private String model;
 
     @NotBlank(message = "Versão é obrigatória")
     @Size(max = 100, message = "Versão deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Versão contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Versão contém caracteres inválidos")
     @Schema(description = "Versão do veículo", example = "XLT")
     private String version;
 
     @NotBlank(message = "Motor é obrigatório")
     @Size(max = 100, message = "Motor deve ter no máximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-\\.\\/\\+]+$", message = "Motorização contém caracteres inválidos")
+    @Pattern(regexp = "^[\\p{L}0-9\\s\\-\\.\\/\\+]+$", message = "Motorização contém caracteres inválidos")
     @Schema(description = "Motorização", example = "3.0 V6 - 24V")
     private String engine;
 
@@ -62,6 +63,36 @@ public class VehicleUpsertDTO {
         engine = sanitizeAndNormalize(engine);
         year = sanitizeAndNormalize(year);
         vehicleCategory = sanitizeAndNormalize(vehicleCategory);
+
+        if (categories != null) {
+            validateCategoryMap(categories.getEngineAndTransmission());
+            validateCategoryMap(categories.getWheels());
+            validateCategoryMap(categories.getConnectivity());
+            validateCategoryMap(categories.getIceLineUp());
+            validateCategoryMap(categories.getAirConditioning());
+            validateCategoryMap(categories.getSafety());
+            validateCategoryMap(categories.getHighTech());
+            validateCategoryMap(categories.getGlobalClosing());
+            validateCategoryMap(categories.getTrim());
+            validateCategoryMap(categories.getSunroof());
+            validateCategoryMap(categories.getSeats());
+            validateCategoryMap(categories.getLights());
+            validateCategoryMap(categories.getFourByFour());
+            validateCategoryMap(categories.getOthers());
+            validateCategoryMap(categories.getInmetroPbev());
+        }
+    }
+
+    private void validateCategoryMap(Map<String, Object> map) {
+        if (map == null) return;
+        if (map.size() > 50) {
+            throw new IllegalArgumentException("Número excessivo de atributos na categoria (máximo 50)");
+        }
+        for (String key : map.keySet()) {
+            if (key == null || key.contains("$") || key.contains(".")) {
+                throw new IllegalArgumentException("Chave inválida na especificação técnica: não pode conter '$' ou '.'");
+            }
+        }
     }
 
     private String sanitizeAndNormalize(String value) {
@@ -69,7 +100,6 @@ public class VehicleUpsertDTO {
             return null;
         }
 
-        // Sanitização contra caracteres perigosos e tags HTML
         String sanitized = value.replaceAll("[<>'\"\\;]", "")
                 .trim()
                 .replaceAll("\\s+", " ")

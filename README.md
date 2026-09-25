@@ -1,6 +1,6 @@
 # Specvora Service
 
-> **API RESTful Nível 2** para agregação, consulta e gerenciamento de especificações técnicas de veículos, desenvolvida com Spring Boot, MongoDB, Autenticação JWT com RBAC (Role-Based Access Control) e Pipeline DevSecOps Integrado.
+> **API RESTful Nível 2** para agregação, consulta e gerenciamento de especificações técnicas de veículos, desenvolvida com Spring Boot, MongoDB, Autenticação JWT com RBAC 3-Tier (`ROLE_USER`, `ROLE_GESTOR`, `ROLE_ADMINISTRADOR`) e Pipeline DevSecOps Integrado.
 
 ---
 
@@ -22,38 +22,46 @@ flowchart TD
     Client["Cliente HTTP / Frontend / Swagger UI"]:::client
 
     subgraph SecurityLayer ["Camada de Segurança & Filtros HTTP"]
-        CORS["CrossOriginConfig<br/>(CORS Restrito)"]:::sec
-        JWTFilter["JwtAuthFilter<br/>(Extração & Validação de JWT)"]:::sec
-        IdempFilter["IdempotencyFilter<br/>(Prevenção de Duplicidades)"]:::sec
-        RateFilter["RateLimitingFilter<br/>(Bucket4j - 60 req/min)"]:::sec
-        SecConfig["SecurityConfig<br/>(RBAC: ROLE_USER / ROLE_ADMIN)"]:::sec
+        CORS["CrossOriginConfig<br/>(CORS Restrito: GET, POST, PUT, DELETE, OPTIONS)"]:::sec
+        RateFilter["RateLimitingFilter<br/>(Bucket4j: 5 req/min login, 60 req/min geral)"]:::sec
+        IdempFilter["IdempotencyFilter<br/>(Prevenção de Duplicidades via 409)"]:::sec
+        JWTFilter["JwtAuthFilter<br/>(Extração & Validação de JWT / Firebase)"]:::sec
+        SecConfig["SecurityConfig & RoleHierarchy<br/>(ADMINISTRADOR > GESTOR > USER)"]:::sec
+        ErrWriter["ErrorResponseWriter<br/>(Serialização Unificada de Erros RFC 7807)"]:::sec
     end
 
     subgraph PresentationLayer ["Camada de Apresentação (REST Controllers)"]
         AuthController["AuthController / AuthApi<br/>(/auth/login, /auth/register, /auth/me)"]:::ctrl
         VehicleController["VehicleController / VehicleApi<br/>(/vehicles - CRUD Nível 2)"]:::ctrl
-        GlobalHandler["GlobalExceptionHandler<br/>(Respostas de Erro Padronizadas)"]:::ctrl
+        GlobalHandler["GlobalExceptionHandler<br/>(Tratamento Centralizado: 400, 404, 405, 409, 415, 500)"]:::ctrl
     end
 
-    subgraph ServiceLayer ["Camada de Negócio & Segurança"]
-        AuthService["AuthService<br/>(Gestão de Usuários & BCrypt)"]:::srv
-        JwtService["JwtTokenService<br/>(Geração & Validação HMAC256)"]:::srv
-        VehicleService["VehicleService<br/>(Regras de Negócio & Normalização)"]:::srv
+    subgraph ServiceLayer ["Camada de Negócio & Criptografia"]
+        AuthService["AuthService<br/>(Gestão de Credenciais BCrypt & Auditoria)"]:::srv
+        JwtService["JwtTokenService<br/>(Geração & Validação HMAC256 com aud/iss)"]:::srv
+        LocalCrypto["LocalEncryptionService<br/>(Cifragem AES-256-GCM para Auditoria)"]:::srv
+        VehicleService["VehicleService<br/>(Regras de Negócio & Sanitização)"]:::srv
     end
 
     subgraph PersistenceLayer ["Camada de Dados"]
         VehicleRepo["VehicleRepository<br/>(Spring Data MongoDB + Criteria Custom)"]:::data
-        Mongock["MongockChangeLog<br/>(Migrações de Índices)"]:::data
+        Mongock["InitialVehiclesChangeLog<br/>(Migrações de Índices MongoDB)"]:::data
     end
 
     Database[("MongoDB<br/>Collection: vehicles")]:::db
 
-    Client --> CORS --> JWTFilter --> IdempFilter --> RateFilter --> SecConfig
+    Client --> CORS --> RateFilter --> IdempFilter --> JWTFilter --> SecConfig
     SecConfig --> AuthController & VehicleController
-    AuthController --> AuthService --> JwtService
+    SecConfig -.-> ErrWriter
+    JWTFilter -.-> ErrWriter
+    RateFilter -.-> ErrWriter
+    IdempFilter -.-> ErrWriter
+    AuthController --> AuthService
+    AuthService --> JwtService & LocalCrypto
     VehicleController --> VehicleService --> VehicleRepo --> Database
     Mongock -.-> Database
     VehicleController -.-> GlobalHandler
+    AuthController -.-> GlobalHandler
 ```
 
 ### 1.2. Fluxo de Comunicação e Autenticação
@@ -74,19 +82,19 @@ sequenceDiagram
     User->>Auth: POST /auth/login {username, password}
     Auth->>Auth: Valida senha via BCrypt
     Auth->>Token: generateToken(username, roles)
-    Token-->>Auth: Retorna JWT assinado com claims e expiração (2h)
-    Auth-->>User: 200 OK {token: "Bearer eyJhbG...", roles: ["ROLE_ADMIN"]}
+    Token-->>Auth: Retorna JWT assinado com claims (aud, iss) e expiração (2h)
+    Auth-->>User: 200 OK {token: "eyJhbG...", tokenType: "Bearer", roles: ["ROLE_ADMINISTRADOR"]}
 
-    %% Fluxo de Consulta/Escrita Protegida
-    Note over User,DB: 2. Fluxo de Acesso a Recurso Protegido com RBAC
+    %% Fluxo de Criação Protegida com RBAC
+    Note over User,DB: 2. Fluxo de Operação de Escrita Protegida com RBAC
     User->>Sec: POST /vehicles [Header: Authorization: Bearer eyJ...]
     Sec->>Token: validateToken(token) & getAuthentication(token)
-    Token-->>Sec: Authentication {Principal: admin, Authorities: [ROLE_ADMIN]}
-    Sec->>Sec: Verifica se usuário possui ROLE_ADMIN
-    alt Perfil Válido (ROLE_ADMIN)
+    Token-->>Sec: Authentication {Principal: gestor, Authorities: [ROLE_GESTOR]}
+    Sec->>Sec: RoleHierarchy avalia autorização para POST /vehicles
+    alt Perfil Autorizado (ROLE_GESTOR ou ROLE_ADMINISTRADOR)
         Sec->>Ctrl: Encaminha para createVehicle(dto)
         Ctrl->>Srv: createVehicle(dto)
-        Srv->>Srv: normalize() (trim, lowercase, saneamento)
+        Srv->>Srv: sanitizeAndNormalize() (trim, lowercase, unicode, regex)
         Srv->>DB: save(vehicleModel)
         DB-->>Srv: Entidade persistida com ID
         Srv-->>Ctrl: VehicleModel
@@ -104,25 +112,28 @@ sequenceDiagram
 src/main/java/br/com/specvora_service/
 ├── auth/                                # Módulo de Autenticação e JWT
 │   ├── controller/
-│   │   ├── AuthApi.java                 # Contrato e anotações OpenAPI
+│   │   ├── AuthApi.java                 # Contrato e anotações OpenAPI (rotas públicas sem cadeado)
 │   │   └── AuthController.java          # REST Controller (/auth)
 │   ├── dto/
 │   │   ├── LoginRequestDTO.java         # Request de login
 │   │   ├── LoginResponseDTO.java        # Resposta com JWT e roles
-│   │   ├── RegisterRequestDTO.java      # Request de cadastro
-│   │   └── UserResponseDTO.java          # Dados do usuário e perfil
+│   │   ├── RegisterRequestDTO.java      # Request de cadastro com validação
+│   │   └── UserResponseDTO.java         # Dados do usuário e perfil
 │   └── service/
-│       ├── AuthService.java             # Gestão de credenciais (BCrypt)
-│       └── JwtTokenService.java         # Geração e validação de tokens JWT
-├── config/                              # Configurações de Infraestrutura
-│   ├── CrossOriginConfig.java           # Restrição de CORS
+│       ├── AuthService.java             # Gestão de credenciais (BCrypt), RBAC e auditoria cifrada
+│       └── JwtTokenService.java         # Geração e validação de tokens JWT (HS256 com aud/iss)
+├── config/                              # Configurações de Infraestrutura e Filtros
+│   ├── CrossOriginConfig.java           # Restrição de CORS (GET, POST, PUT, DELETE, OPTIONS)
+│   ├── ErrorResponseWriter.java         # Serializador unificado de respostas de erro (RFC 7807)
 │   ├── FirebaseConfig.java              # Integração resiliente Firebase Admin
-│   ├── IdempotencyFilter.java           # Prevenção de duplicações via header
-│   ├── JwtAuthFilter.java               # Filtro de autenticação Bearer JWT
+│   ├── IdempotencyFilter.java           # Prevenção de duplicações via header Idempotency-Key (409)
+│   ├── JwtAuthFilter.java               # Filtro de autenticação Bearer JWT e propagação de expiração
 │   ├── MongoConfig.java                 # Conexão e pool MongoDB
 │   ├── OpenApiConfig.java               # Configuração Swagger com BearerAuth
-│   ├── RateLimitingFilter.java          # Bucket4j (Rate Limit)
-│   └── SecurityConfig.java              # Spring Security Filter Chain e RBAC
+│   ├── RateLimitingFilter.java          # Bucket4j (Rate Limit anti-brute force em /auth/login)
+│   └── SecurityConfig.java              # SecurityFilterChain, RoleHierarchy e HTTP Security Headers
+├── security/                            # Criptografia e Serviços de Segurança
+│   └── LocalEncryptionService.java      # Criptografia autenticada AES-256-GCM para dados em repouso
 └── vehicle/                             # Módulo de Domínio de Veículos
     ├── controller/
     │   ├── VehicleApi.java              # Contrato OpenAPI REST Nível 2
@@ -130,53 +141,73 @@ src/main/java/br/com/specvora_service/
     ├── domain/
     │   └── VehicleModel.java            # Entidade mapeada no MongoDB
     ├── dto/
-    │   ├── VehicleRequestDTO.java       # DTO para busca parametrizada
-    │   └── VehicleUpsertDTO.java        # DTO para criação e atualização
+    │   ├── VehicleRequestDTO.java       # DTO para busca parametrizada com regex Unicode
+    │   └── VehicleUpsertDTO.java        # DTO para criação e atualização com sanitização NoSQL
     ├── exception/
-    │   ├── ErrorResponseDTO.java        # Resposta padronizada de erro
-    │   ├── GlobalExceptionHandler.java  # Tratamento centralizado de erros
-    │   └── VehicleNotFoundException.java# Exceção de negócio para 404
+    │   ├── ErrorResponseDTO.java        # Resposta padronizada de erro RFC 7807
+    │   ├── GlobalExceptionHandler.java  # Tratamento centralizado de erros (400, 404, 405, 409, 415, 500)
+    │   ├── ResourceConflictException.java# Exceção de conflito de recursos (HTTP 409)
+    │   └── VehicleNotFoundException.java# Exceção de negócio para HTTP 404
     ├── migration/
     │   └── InitialVehiclesChangeLog.java# Migrações Mongock
     ├── repository/
     │   ├── VehicleRepository.java       # Spring Data MongoRepository
     │   ├── VehicleRepositoryCustom.java # Assinatura de busca avançada
-    │   └── VehicleRepositoryImpl.java   # Implementação com Criteria
+    │   └── VehicleRepositoryImpl.java   # Implementação segura com Criteria
     └── service/
-        └── VehicleService.java          # Regras de negócio e CRUD
+        └── VehicleService.java          # Regras de negócio, substituição completa PUT e CRUD
 ```
 
 ---
 
 ## 2. Autenticação, Autorização e JWT
 
-O Specvora Service oferece um ecossistema seguro de autenticação e controle de acesso baseado em **JWT (JSON Web Token)** com suporte a **RBAC (Role-Based Access Control)**:
+O Specvora Service oferece um ecossistema seguro de autenticação e controle de acesso baseado em **JWT (JSON Web Token)** com suporte a **RBAC (Role-Based Access Control)** em 3 níveis hierárquicos:
 
-### 2.1. Perfis de Acesso (Roles)
-- **`ROLE_ADMIN`**: Perfil com privilégio total. Permite cadastrar novos veículos (`POST /vehicles`), atualizar registros existentes (`PUT /vehicles/{id}`) e excluir veículos (`DELETE /vehicles/{id}`), além de realizar consultas.
-- **`ROLE_USER`**: Perfil para clientes e consumidores da API. Permite listar veículos (`GET /vehicles`), buscar por ID (`GET /vehicles/{id}`), pesquisar por especificações técnicas (`POST /vehicles/search`) e consultar o próprio perfil (`GET /auth/me`). Não possui permissão para modificar ou apagar dados (retorna `403 Forbidden`).
+### 2.1. Perfis de Acesso (Roles) e Hierarquia
 
-### 2.2. Usuários Pré-configurados para Teste
-A aplicação já inicia com duas credenciais prontas para validação:
+O Spring Security está configurado com `RoleHierarchy`:
+`ROLE_ADMINISTRADOR > ROLE_GESTOR > ROLE_USER`
 
-| Usuário | Senha | Perfil / Permissão |
-|---|---|---|
-| **`admin`** | `admin123` | **`ROLE_ADMIN`**, `ROLE_USER` |
-| **`user`** | `user123` | **`ROLE_USER`** |
+- **`ROLE_USER`**: Perfil padrão para consumidores e clientes da API. Permite listar veículos (`GET /vehicles`), buscar por ID (`GET /vehicles/{id}`), pesquisar por especificações técnicas (`POST /vehicles/search`) e consultar o próprio perfil (`GET /auth/me`). Não possui permissão para criar, alterar ou apagar veículos (retorna `403 Forbidden`).
+- **`ROLE_GESTOR`**: Herda todas as permissões de User e adiciona a capacidade de cadastrar novos veículos (`POST /vehicles`) e atualizar dados existentes (`PUT /vehicles/{id}`).
+- **`ROLE_ADMINISTRADOR`**: Perfil com privilégio total. Herda todas as permissões de Gestor, pode excluir veículos (`DELETE /vehicles/{id}`) e possui permissão exclusiva para cadastrar novos usuários com perfis elevados (`GESTOR` ou `ADMINISTRADOR`).
 
-Novos usuários também podem ser cadastrados a qualquer momento via `POST /auth/register`.
+### 2.2. Prevenção de Escalada de Privilégio no Registro
 
-### 2.3. Especificação do JWT
-- **Algoritmo:** HMAC256 (`HS256`).
-- **Assinatura:** Chave criptográfica configurável (`security.jwt.secret`).
-- **Validade:** 2 horas (`security.jwt.expiration-hours`).
+O endpoint de cadastro (`POST /auth/register`) protege a integridade do sistema contra escalada de privilégios:
+- O auto-registro anônimo/público atribui exclusivamente o perfil inicial de menor privilégio: **`ROLE_USER`**.
+- Caso o payload solicite um perfil elevado (`GESTOR` ou `ADMINISTRADOR`), o serviço valida se o usuário emissor da requisição possui `ROLE_ADMINISTRADOR`. Caso contrário, a requisição é rejeitada com **`403 Forbidden`** (`AccessDeniedException`).
+- Tentativas de cadastro com nome de usuário já existente retornam **`409 Conflict`**.
+
+### 2.3. Usuários Pré-configurados para Teste
+
+A aplicação já inicia com três credenciais prontas para validação:
+
+| Usuário | Senha | Perfil Principal | Permissões no Sistema |
+|---|---|---|---|
+| **`admin`** | `admin123` | **`ROLE_ADMINISTRADOR`** | Total: Leitura, Escrita, Exclusão e Gestão de Usuários |
+| **`gestor`** | `gestor123` | **`ROLE_GESTOR`** | Operacional: Leitura, Criação e Edição de Veículos |
+| **`user`** | `user123` | **`ROLE_USER`** | Padrão: Somente Leitura e Busca Técnica |
+
+### 2.4. Especificação do JWT
+
+- **Algoritmo:** HMAC256 (`HS256`) fixo e imutável.
+- **Entropia da Chave:** Validação obrigatória de no mínimo 256 bits (32 bytes). Caso não seja fornecida no ambiente (`JWT_SECRET`), o serviço gera dinamicamente uma chave criptográfica efêmera com `SecureRandom`.
+- **Validade:** 2 horas.
 - **Claims incorporadas:**
   - `sub`: Nome do usuário (username).
-  - `roles`: Lista de perfis concedidos (ex.: `["ROLE_ADMIN", "ROLE_USER"]`).
+  - `roles`: Lista de perfis concedidos (ex.: `["ROLE_ADMINISTRADOR"]`).
   - `iss`: `"specvora-service"`.
+  - `aud`: `"specvora-api"`.
   - `iat`: Timestamp de emissão.
-  - `exp`: Timestamp de expiração.
-- **Dual-mode de validação:** O filtro `JwtAuthFilter` valida o JWT emitido internamente e, de forma transparente, também suporta tokens do Firebase Authentication caso configurado.
+  - `exp`: Timestamp de expiração (propagado para `/auth/me`).
+
+Recomendação de geração de chave forte em produção:
+```bash
+export JWT_SECRET="$(openssl rand -base64 48)"
+export AES_SECRET="$(openssl rand -base64 32)"
+```
 
 ---
 
@@ -185,21 +216,21 @@ Novos usuários também podem ser cadastrados a qualquer momento via `POST /auth
 A API adota integralmente o **Nível 2** do modelo de maturidade REST, caracterizado por:
 1. **Recursos bem definidos em URIs no plural** (`/vehicles`, `/auth`).
 2. **Uso semântico estrito dos métodos HTTP** (`GET`, `POST`, `PUT`, `DELETE`).
-3. **Status codes coerentes com a operação realizada**.
+3. **Status codes coerentes com cada operação**, eliminando qualquer retorno indevido de HTTP 500 para erros originados pelo cliente.
 
 ### 3.1. Matriz de Endpoints
 
-| Método | Endpoint | Perfil Necessário | Status de Sucesso | Status de Erro Possíveis | Descrição |
+| Método | Endpoint | Perfil Mínimo | Sucesso | Erros Mapeados | Descrição |
 |---|---|---|---|---|---|
-| `POST` | `/auth/login` | Público | `200 OK` | `400`, `401` | Autentica e emite token JWT com roles |
-| `POST` | `/auth/register` | Público | `201 Created` | `400` | Cadastra novo usuário (`USER` ou `ADMIN`) |
-| `GET` | `/auth/me` | Autenticado | `200 OK` | `401` | Retorna username e roles do token atual |
-| `GET` | `/vehicles` | `USER` / `ADMIN` | `200 OK` | `401` | Lista todos os veículos |
-| `GET` | `/vehicles/{id}` | `USER` / `ADMIN` | `200 OK` | `401`, `404` | Busca detalhes de um veículo por ID |
-| `POST` | `/vehicles/search` | `USER` / `ADMIN` | `200 OK` | `400`, `401`, `404` | Busca veículo por especificações técnicas |
-| `POST` | `/vehicles` | **`ADMIN`** | **`201 Created`** | `400`, `401`, **`403`** | Cadastra veículo (inclui Header `Location`) |
-| `PUT` | `/vehicles/{id}` | **`ADMIN`** | **`200 OK`** | `400`, `401`, **`403`**, `404` | Atualiza dados de um veículo |
-| `DELETE` | `/vehicles/{id}` | **`ADMIN`** | **`204 No Content`** | `401`, **`403`**, `404` | Exclui um veículo do catálogo |
+| `POST` | `/auth/login` | Público | `200 OK` | `400`, `401`, `429` | Autentica e emite token JWT com roles |
+| `POST` | `/auth/register` | Público | `201 Created` | `400`, `403`, `409` | Cadastra usuário (elevado requer ADMINISTRADOR) |
+| `GET` | `/auth/me` | Autenticado | `200 OK` | `401` | Retorna usuário, roles e `expiresAt` do token |
+| `GET` | `/vehicles` | `USER` | `200 OK` | `401` | Lista todos os veículos cadastrados |
+| `GET` | `/vehicles/{id}` | `USER` | `200 OK` | `401`, `404` | Busca detalhes de um veículo por ID |
+| `POST` | `/vehicles/search` | `USER` | `200 OK` | `400`, `401`, `404` | Busca veículo por especificações técnicas |
+| `POST` | `/vehicles` | **`GESTOR`** | **`201 Created`** | `400`, `401`, **`403`**, `409` | Cadastra veículo (inclui Header `Location`) |
+| `PUT` | `/vehicles/{id}` | **`GESTOR`** | **`200 OK`** | `400`, `401`, **`403`**, `404` | Substituição completa dos dados do veículo |
+| `DELETE` | `/vehicles/{id}` | **`ADMINISTRADOR`** | **`204 No Content`** | `401`, **`403`**, `404` | Exclui um veículo do catálogo |
 
 ---
 
@@ -207,18 +238,18 @@ A API adota integralmente o **Nível 2** do modelo de maturidade REST, caracteri
 
 ### 4.1. Resposta de Erro Padronizada (`ErrorResponseDTO`)
 
-Todas as falhas da API (de validação, regras de negócio ou segurança) retornam uma resposta uniforme inspirada no padrão **RFC 7807 (Problem Details)**:
+Todas as falhas da API (validação, negócio ou segurança) retornam uma resposta uniforme inspirada no padrão **RFC 7807 (Problem Details)**:
 
 ```json
 {
-  "timestamp": "2026-09-24T03:45:00.123Z",
+  "timestamp": "2026-09-25T03:45:00.123Z",
   "status": 400,
   "error": "Bad Request",
   "message": "Falha na validação dos campos da requisição",
   "path": "/vehicles",
   "fieldErrors": {
     "brand": "Marca é obrigatória",
-    "year": "Ano é obrigatório"
+    "year": "Ano deve ser um valor numérico válido de 4 dígitos entre 1900 e 2099"
   }
 }
 ```
@@ -229,30 +260,29 @@ A documentação interativa da API está disponível em:
 👉 **`http://localhost:8080/swagger-ui.html`**
 
 **Como testar pelo Swagger UI:**
-1. Abra o endpoint `POST /auth/login` e execute com o usuário `admin` e senha `admin123`.
+1. Execute `POST /auth/login` com usuário `admin` e senha `admin123`.
 2. Copie o valor do campo `"token"` retornado.
-3. Clique no botão **Authorize** (com ícone de cadeado no topo da página).
-4. Cole o token no campo de texto e clique em **Authorize**.
-5. Todos os endpoints protegidos agora podem ser testados diretamente pela interface.
+3. Clique no botão **Authorize** (topo da página).
+4. Cole o token e confirme. Todos os endpoints protegidos agora podem ser testados diretamente pela interface.
 
 ---
 
 ## 5. Testes Automatizados
 
-A suíte de testes cobre integralmente os comportamentos críticos da API, incluindo cenários de sucesso, validação de dados, regras de negócio, autenticação e restrições de acesso não autorizado:
+A suíte de testes cobre comportamentos de negócio, segurança em profundidade e a cadeia completa do Spring Security:
 
 | Classe de Teste | Camada Testada | Cenários Validados |
 |---|---|---|
-| [`JwtTokenServiceTest`](file:///src/test/java/br/com/specvora_service/auth/JwtTokenServiceTest.java) | Token / Criptografia | Geração de token, assinatura HMAC256, extração de roles, rejeição de tokens adulterados e expiração. |
-| [`AuthServiceTest`](file:///src/test/java/br/com/specvora_service/auth/AuthServiceTest.java) | Segurança / Negócio | Login com sucesso (`admin` e `user`), validação de senhas com BCrypt, rejeição de credenciais inválidas (`401`), cadastro e rejeição de duplicidade. |
-| [`VehicleServiceTest`](file:///src/test/java/br/com/specvora_service/vehicle/VehicleServiceTest.java) | Regras de Negócio | CRUD completo: `findAll`, `findById`, busca por especificações com normalização de dados, criação, atualização, exclusão e lançamento de `VehicleNotFoundException` (`404`). |
-| [`VehicleControllerTest`](file:///src/test/java/br/com/specvora_service/vehicle/VehicleControllerTest.java) | Controller REST Nível 2 | `GET /vehicles` (200), `GET /vehicles/{id}` (200 e 404), `POST /vehicles/search` (200 e 400), `POST /vehicles` (**201 Created** com header **Location**), `PUT /vehicles/{id}` (200), `DELETE /vehicles/{id}` (**204 No Content**). |
-| [`AuthControllerTest`](file:///src/test/java/br/com/specvora_service/auth/AuthControllerTest.java) | Controller / Auth | Login com emissão de token (200), rejeição de credenciais (401), cadastro de usuário (201) e recuperação de perfil (`/auth/me`). |
-| [`GlobalExceptionHandlerTest`](file:///src/test/java/br/com/specvora_service/vehicle/GlobalExceptionHandlerTest.java) | Tratamento de Erros | Validação de conversão para status codes padronizados: 400, 401, 403, 404 e 500 sem vazamento de stacktrace. |
+| [`VehicleSecurityIntegrationTest`](src/test/java/br/com/specvora_service/vehicle/VehicleSecurityIntegrationTest.java) | **SecurityFilterChain Real** | Requisição sem token (`401`), token com perfil `USER` tentando POST (`403`), criação com perfil `ADMINISTRADOR`/`GESTOR` (**`201`** com header **`Location`**), e exclusão com `ADMINISTRADOR` (**`204 No Content`**). |
+| [`JwtTokenServiceTest`](src/test/java/br/com/specvora_service/auth/JwtTokenServiceTest.java) | Token / Criptografia | Assinatura HMAC256, audiência `specvora-api`, emissor, extração de roles, rejeição de chave fraca, geração de chave efêmera e **rejeição estrita de token expirado**. |
+| [`AuthServiceTest`](src/test/java/br/com/specvora_service/auth/AuthServiceTest.java) | Segurança / Negócio | Login com BCrypt, bloqueio de escalada de privilégio (**`403`**), detecção de username duplicado (**`409`**), propagação de `expiresAt` e auditoria cifrada em repouso. |
+| [`RateLimitingFilterTest`](src/test/java/br/com/specvora_service/config/RateLimitingFilterTest.java) | Hardening de API | Proteção anti-força bruta na rota `/auth/login` (6ª tentativa bloqueada com **`429`**, `Retry-After` e formato unificado via `ErrorResponseWriter`). |
+| [`LocalEncryptionServiceTest`](src/test/java/br/com/specvora_service/security/LocalEncryptionServiceTest.java) | Criptografia Local | AES-256-GCM com IV randômico de 12 bytes, tag de integridade de 128 bits e detecção de adulteração de bits. |
+| [`GlobalExceptionHandlerTest`](src/test/java/br/com/specvora_service/vehicle/GlobalExceptionHandlerTest.java) | Tratamento de Erros | Validação de status codes: **`400`** (JSON malformado), **`404`**, **`405`** (método não suportado), **`409`** (conflito) e **`500`** sem vazamento de stacktrace. |
+| [`VehicleServiceTest`](src/test/java/br/com/specvora_service/vehicle/VehicleServiceTest.java) | Regras de Negócio | CRUD completo, sanitização de entrada, substituição integral de categorias no PUT e lançamento de `VehicleNotFoundException`. |
+| [`VehicleControllerTest`](src/test/java/br/com/specvora_service/vehicle/VehicleControllerTest.java) | Controller REST Nível 2 | Contratos REST de apresentação e serialização. |
 
 ### Como Executar os Testes
-Para rodar a suíte completa de testes automatizados e gerar o relatório:
-
 ```bash
 ./mvnw test
 ```
@@ -261,96 +291,82 @@ Para rodar a suíte completa de testes automatizados e gerar o relatório:
 
 ## 6. Pipeline DevSecOps Integrado
 
-O projeto conta com uma pipeline CI/CD automatizada no **GitHub Actions** ([`.github/workflows/devsecops.yml`](file:///.github/workflows/devsecops.yml)), integrando:
-- **Secret Scanning:** Gitleaks com regras customizadas em [`.gitleaks.toml`](file:///.gitleaks.toml).
-- **SCA (Software Composition Analysis):** Dependabot ([`.github/dependabot.yml`](file:///.github/dependabot.yml)) + Snyk & Trivy.
-- **SAST (Static Application Security Testing):** Semgrep com regras OWASP Top 10 e boas práticas Java.
-- **Container Hardening:** Imagem Docker segura multi-stage com usuário não-root ([`Dockerfile`](file:///Dockerfile)).
-- **Quality Gates:** Bloqueio automático de deploy caso sejam detectadas falhas de segurança.
+O projeto conta com uma pipeline CI/CD automatizada no **GitHub Actions** ([`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)), integrando:
+- **Secret Scanning:** Gitleaks com regras customizadas em [`.gitleaks.toml`](.gitleaks.toml).
+- **SCA (Software Composition Analysis):** Dependabot + Trivy FS (`exit-code: 1` e SARIF) + Snyk opcional.
+- **SAST (Static Application Security Testing):** Semgrep com regras OWASP Top 10 e regras Java com upload SARIF.
+- **IaC Security:** Trivy Config analisando Dockerfile e docker-compose.
+- **Container Hardening:** Dockerfile multi-stage com usuário não-root (`appuser` 10001) e scan Trivy Image.
+- **Evidências de Build:** Upload automático de relatórios Surefire e Quality Gates bloqueantes.
 
-Documentação completa e diagrama em: **[DEVSECOPS.md](DEVSECOPS.md)**.
-
-### Relatório de Evidências de Segurança em Código e Infraestrutura
-Para a demonstração detalhada com comparativos "Antes x Depois", testes de criptografia local (**AES-256-GCM**), proteção contra ataques de força bruta no Rate Limit e validação estrita de entrada, consulte o relatório: **[SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md)**.
+Documentação completa, fluxo no ecossistema Ford e arquitetura MQTT/TLS em: **[DEVSECOPS.md](DEVSECOPS.md)**.
+Relatório de evidências detalhado com comparativos "Antes x Depois": **[SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md)**.
 
 ---
 
 ## 7. Como Executar a Aplicação Localmente
 
-### Pré-requisitos
+### Opção A: Executar com Docker Compose (Recomendado)
+Sobe a aplicação compilada em container seguro multi-stage não-root e a instância do MongoDB 7 com rede isolada:
+
+```bash
+docker compose up --build
+```
+A API estará acessível em `http://localhost:8080`.
+
+### Opção B: Executar Manualmente com Maven
+
+#### Pré-requisitos:
 - **JDK 21**
-- **Maven 3.9+** (ou utilizar o `./mvnw` incluso)
 - **MongoDB 7+** rodando localmente na porta `27017`
 
-### Passo 1: Subir o Banco de Dados (Docker)
 ```bash
-docker pull mongo
-docker run -d --name mongodb -p 27017:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=specvora \
-  -e MONGO_INITDB_ROOT_PASSWORD=fiap \
-  mongo
-```
+# Subir instância do MongoDB via Docker
+docker run -d --name mongodb -p 27017:27017 mongo:7
 
-### Passo 2: Executar a Aplicação
-```bash
-# Definir a URI do MongoDB (caso utilize usuário e senha)
-export MONGODB_URI="mongodb://specvora:fiap@localhost:27017/?authSource=admin"
+# Configurar variáveis de ambiente recomendadas
+export MONGODB_URI="mongodb://localhost:27017/specvora"
+export JWT_SECRET="$(openssl rand -base64 48)"
+export AES_SECRET="$(openssl rand -base64 32)"
 
 # Iniciar o servidor Spring Boot
 ./mvnw spring-boot:run
 ```
 
-A aplicação estará acessível em `http://localhost:8080`.
-
 ---
 
 ## 8. Exemplos Práticos de Uso com cURL
 
-### 1. Obter Token JWT como Administrador
+### 1. Obter Token JWT como Gestor
 ```bash
 curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}'
+  -d '{"username":"gestor","password":"gestor123"}'
 ```
 
-### 2. Cadastrar um Novo Veículo (Requer ROLE_ADMIN)
+### 2. Cadastrar um Novo Veículo (Requer ROLE_GESTOR ou ROLE_ADMINISTRADOR)
 ```bash
 curl -X POST http://localhost:8080/vehicles \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <SEU_TOKEN_ADMIN>" \
+  -H "Authorization: Bearer <SEU_TOKEN_GESTOR>" \
   -d '{
-    "brand": "Toyota",
-    "model": "Corolla Cross",
-    "version": "XRX Hybrid",
-    "engine": "1.8 Hybrid",
+    "brand": "Ford",
+    "model": "Ranger",
+    "version": "XLT",
+    "engine": "3.0 V6",
     "year": "2026",
-    "vehicleCategory": "SUV"
+    "vehicleCategory": "Picape"
   }'
 ```
-*Resposta esperada: `201 Created` com o cabeçalho `Location: /vehicles/<id>`.*
+*Resposta esperada: `201 Created` com cabeçalho `Location: /vehicles/<id>`.*
 
-### 3. Consultar Veículos Cadastrados
+### 3. Consultar Veículos Cadastrados (Acesso com ROLE_USER)
 ```bash
 curl -X GET http://localhost:8080/vehicles \
-  -H "Authorization: Bearer <SEU_TOKEN_AQUI>"
+  -H "Authorization: Bearer <SEU_TOKEN_USER>"
 ```
 
-### 4. Atualizar um Veículo
-```bash
-curl -X PUT http://localhost:8080/vehicles/<ID_DO_VEICULO> \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <SEU_TOKEN_ADMIN>" \
-  -d '{
-    "brand": "Toyota",
-    "model": "Corolla Cross",
-    "version": "GR-Sport",
-    "engine": "2.0 Dynamic Force",
-    "year": "2026",
-    "vehicleCategory": "SUV"
-  }'
-```
-
-### 5. Excluir um Veículo
+### 4. Excluir um Veículo (Requer ROLE_ADMINISTRADOR)
 ```bash
 curl -X DELETE http://localhost:8080/vehicles/<ID_DO_VEICULO> \
   -H "Authorization: Bearer <SEU_TOKEN_ADMIN>"

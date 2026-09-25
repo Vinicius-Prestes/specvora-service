@@ -1,7 +1,12 @@
+server:
+  max-http-request-header-size: 8KB
+  tomcat:
+    max-swallow-size: 256KB
+
 spring:
   data:
     mongodb:
-     uri: ${MONGODB_URI:mongodb://localhost:27017/?authSource=admin}
+      uri: ${MONGODB_URI:mongodb://localhost:27017/?authSource=admin}
 
 http:
   cors:
@@ -14,7 +19,7 @@ mongock:
 
 firebase:
   credentials:
-   path: ${FIREBASE_CREDENTIALS_PATH:/path/to/firebase-key.json}
+    path: ${FIREBASE_CREDENTIALS_PATH:/path/to/firebase-key.json}
 
 springdoc:
   api-docs:
@@ -24,5 +29,7 @@ springdoc:
 
 security:
   jwt:
-    secret: ${JWT_SECRET:specvora-devsecops-super-secret-jwt-key-for-fiap-2026}
+    secret: ${JWT_SECRET:}
     expiration-hours: ${JWT_EXPIRATION_HOURS:2}
+  crypto:
+    aes-secret: ${AES_SECRET:}

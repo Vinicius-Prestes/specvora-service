@@ -1,11 +1,14 @@
+# Segredos NUNCA ficam neste arquivo: são lidos do ambiente ou de um arquivo .env
+# (não versionado). Copie .env.example para .env e gere valores próprios.
 services:
   api:
     build: .
     ports:
       - "8080:8080"
     environment:
-      - MONGODB_URI=mongodb://specvora:fiap@mongo:27017/specvora?authSource=admin
-      - JWT_SECRET=specvora-devsecops-super-secret-jwt-key-for-fiap-2026-rotacionada
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:?defina MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD:?defina MONGO_ROOT_PASSWORD}@mongo:27017/specvora?authSource=admin
+      - JWT_SECRET=${JWT_SECRET:?defina JWT_SECRET (mínimo 32 caracteres)}
+      - AES_SECRET=${AES_SECRET:?defina AES_SECRET}
     depends_on:
       - mongo
     security_opt:
@@ -15,8 +18,11 @@ services:
   mongo:
     image: mongo:7
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=specvora
-      - MONGO_INITDB_ROOT_PASSWORD=fiap
-    ports:
-      - "27017:27017"
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:?defina MONGO_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:?defina MONGO_ROOT_PASSWORD}
+    # Porta do MongoDB não é publicada no host: acessível apenas pela rede interna do compose
+    expose:
+      - "27017"
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped

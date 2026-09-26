@@ -1,5 +1,8 @@
 package br.com.specvora_service.config;
 
+import br.com.specvora_service.security.SecurityAuditLogger;
+import br.com.specvora_service.security.SecurityAuditLogger.EventType;
+import br.com.specvora_service.security.SecurityAuditLogger.Severity;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,6 +26,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
     private static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
     private final ErrorResponseWriter errorResponseWriter;
+    private final SecurityAuditLogger securityAuditLogger;
     private final Map<String, Long> processedKeys = new ConcurrentHashMap<>();
     private final Duration ttl = Duration.ofMinutes(10);
 
@@ -38,6 +42,10 @@ public class IdempotencyFilter extends OncePerRequestFilter {
                 cleanup(now);
 
                 if (processedKeys.putIfAbsent(key, now) != null) {
+                    securityAuditLogger.logFromRequest(request, EventType.IDEMPOTENCY_CONFLICT, Severity.WARN,
+                            key.substring(0, key.indexOf(':')), HttpStatus.CONFLICT.value(),
+                            "Requisição duplicada interceptada pelo filtro de idempotência",
+                            Map.of("idempotency_key", idempotencyKey.trim(), "action", "REJECTED_DUPLICATE"));
                     errorResponseWriter.write(response, request, HttpStatus.CONFLICT,
                             "Requisição duplicada: a chave Idempotency-Key já foi processada recentemente");
                     return;

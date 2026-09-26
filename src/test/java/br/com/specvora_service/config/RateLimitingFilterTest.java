@@ -23,7 +23,7 @@ class RateLimitingFilterTest {
     @BeforeEach
     void setUp() {
         ErrorResponseWriter writer = new ErrorResponseWriter();
-        rateLimitingFilter = new RateLimitingFilter(writer);
+        rateLimitingFilter = new RateLimitingFilter(writer, mock(br.com.specvora_service.security.SecurityAuditLogger.class));
         filterChain = mock(FilterChain.class);
     }
 

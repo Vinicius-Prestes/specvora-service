@@ -12,9 +12,9 @@ Este documento consolida integralmente as entregas técnicas, arquiteturais e do
 1. **Etapa 1:** Pipeline DevSecOps & Análise de Código (SAST, Secret Scanning e CI/CD)
 2. **Etapa 2:** Segurança de Código e Infraestrutura (Criptografia, Hardening de API, RBAC e Containers)
 3. **Etapa 3:** Logs Estruturados JSON, Regras de Alertas (API/Mobile/IoT/ML) e Resposta a Incidentes (SANS PICERL)
-4. **Etapa 4:** Pesquisa OWASP Top 10 Web & API, Matriz de Riscos e Plano de Mitigação Arquitetural
+4. **Etapa 4:** Pesquisa OWASP Top 10 Web, API Top 10, Mobile Top 10 e ASVS, Matriz de Riscos e Plano de Mitigação
 
-Todos os requisitos foram implementados no código-fonte, cobertos por **62 testes automatizados (100% de aprovação)** e formalizados nos artefatos do repositório.
+Todos os requisitos foram implementados no código-fonte, cobertos por **80 testes automatizados (100% de aprovação)** e formalizados nos artefatos do repositório.
 
 ---
 
@@ -30,36 +30,32 @@ Todos os requisitos foram implementados no código-fonte, cobertos por **62 test
 
 ### 1.1. Arquitetura do Pipeline CI/CD Seguro (GitHub Actions)
 
-O pipeline foi implementado no arquivo [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml) e é disparado a cada `push` ou `pull_request` nos branches `main` e `develop`. Ele adota a filosofia *Shift-Left Security*, executando verificações de segurança antes mesmo do empacotamento do binário.
+O pipeline foi implementado no arquivo [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml) e é disparado a cada `push` ou `pull_request` na branch `main`. Ele adota a filosofia *Shift-Left Security*, executando verificações de segurança antes mesmo do empacotamento do binário.
 
 ```mermaid
 flowchart TD
-    Commit["Commit / Pull Request"] --> Checkout["1. Checkout do Código"]
-    
-    subgraph S1["Segurança Estática & Segredos (Shift-Left)"]
-        Checkout --> Gitleaks["2. Gitleaks (Git History Secret Scan)"]
-        Checkout --> TruffleHog["3. TruffleHog OSS (Deep Verified Secrets)"]
-        Checkout --> Semgrep["4. Semgrep OSS (SAST - OWASP Top 10)"]
+    Commit["Commit / Pull Request na main"]
+
+    subgraph S1["Gates bloqueantes de análise de código"]
+        Commit --> TruffleHog["🔑 TruffleHog (histórico Git, --only-verified)"]
+        TruffleHog --> Gitleaks["Gitleaks (.gitleaks.toml)"]
+        Commit --> Semgrep["🔍 Semgrep 1.90.0 (p/owasp-top-ten + p/java, --error)"]
     end
 
-    subgraph S2["Build & Validação de Aplicação"]
-        Semgrep --> BuildTest["5. Compilação & 62 Testes Automatizados (Maven Wrapper)"]
+    subgraph S0["Pesquisa orientada (informativo, não bloqueia)"]
+        Commit --> TrivyFS["SCA — Trivy FS / Snyk (SARIF)"]
     end
 
-    subgraph S3["Segurança de Supply Chain & Container"]
-        BuildTest --> TrivyFS["6. Trivy FileSystem (SCA - CVEs em Dependências)"]
-        TrivyFS --> DockerBuild["7. Build da Imagem Docker Multi-Stage"]
-        DockerBuild --> TrivyImage["8. Trivy Container Image Scan"]
-    end
+    Gitleaks & Semgrep & TrivyFS --> BuildTest["Build & 80 testes (mvn verify + JaCoCo)"]
+    BuildTest --> TrivyImage["Container — docker build + Trivy Image (SARIF, informativo)"]
+    TrivyImage --> Deploy["Deploy (somente push na main)"]
 
-    DockerBuild --> Artifact["9. Publicação do Artefato / Imagem Pronta para Deploy"]
-
-    classDef stage fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
     classDef sec fill:#ffebee,stroke:#c62828,stroke-width:2px;
-    classDef ok fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    class Gitleaks,TruffleHog,Semgrep,TrivyFS,TrivyImage sec;
-    class BuildTest,DockerBuild stage;
-    class Artifact ok;
+    classDef info fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5;
+    classDef stage fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    class TruffleHog,Gitleaks,Semgrep sec;
+    class TrivyFS,TrivyImage info;
+    class BuildTest,Deploy stage;
 ```
 
 ---
@@ -67,35 +63,36 @@ flowchart TD
 ### 1.2. Ferramentas Integradas e Configuração
 
 1. **Semgrep OSS (SAST — Static Application Security Testing):**
-   - **Regras Aplicadas:** Rule sets oficiais `p/security-audit`, `p/owasp-top-ten` e `p/java`.
-   - **Foco da Análise:** Detecção de injeções (NoSQL/SQL), sanitização de parâmetros, validação de URLs, vulnerabilidades em controle de sessão e desserialização insegura.
-   - **Ação no Pipeline:** Executado via `returntocorp/semgrep-action@v1`. Gera relatório estruturado `semgrep-results.sarif` e é publicado na aba *GitHub Security Code Scanning*.
+   - **Regras Aplicadas:** Rule sets oficiais `p/owasp-top-ten` e `p/java` (96 regras aplicáveis aos arquivos do repositório). Famílias e exemplos de regras em [`DEVSECOPS.md` §3.1](DEVSECOPS.md#31-sast-com-semgrep).
+   - **Foco da Análise:** Criptografia fraca (ECB, IV estático, MD5/SHA-1), JWT (segredo fixo, algoritmo `none`, decodificação sem verificação), injeções, XSS/XXE, desserialização insegura, workflows do GitHub Actions e Dockerfile.
+   - **Ação no Pipeline:** Container `semgrep/semgrep:1.90.0` com `--error` (qualquer achado falha o job). Gera `semgrep.sarif`, publicado na aba *Security > Code scanning*.
 
 2. **TruffleHog OSS (Secret Scanning Avançado):**
-   - **Regras e Modo:** `trufflesecurity/trufflehog@main` com o sinalizador `--only-verified` e inspeção de base `HEAD`.
+   - **Regras e Modo:** `trufflesecurity/trufflehog` v3.97.9 (fixado por SHA) com `--only-verified`, varrendo o histórico entre a branch padrão e o `HEAD`.
    - **Foco da Análise:** Busca ativa por credenciais ativas e verificáveis (chaves de API AWS/Google, chaves privadas PEM/RSA, tokens JWT hardcoded, credenciais de banco MongoDB).
 
 3. **Gitleaks (Secret Scanning Rápido no Histórico Git):**
-   - **Regras:** Configurado via arquivo local [`.gitleaks.toml`](.gitleaks.toml) com exclusão explícita de chaves sintéticas de teste unitário.
+   - **Regras:** [`.gitleaks.toml`](.gitleaks.toml) estende as regras padrão com detectores de chave privada Firebase, URI MongoDB com senha e `JWT_SECRET`/`AES_SECRET` literais. Exceções apenas por *fingerprint* em [`.gitleaksignore`](.gitleaksignore).
+
+4. **SCA e Container Security (pesquisa orientada):** contextualização, pontos de entrada no ecossistema e ferramentas de referência em [`DEVSECOPS.md` §4](DEVSECOPS.md#4-pesquisa-orientada-sca-e-container-security). No pipeline rodam em modo informativo (Trivy FS e Trivy Image publicam SARIF sem bloquear).
 
 ---
 
 ### 1.3. Evidências e Resultados das Varreduras
 
-- **TruffleHog & Gitleaks:**
+Saídas reais (execução local em 2026-09-26 com as mesmas versões e regras do CI). Os **prints das execuções no GitHub Actions** ficam em `docs/evidencias/`.
+
+- **Semgrep** — a primeira varredura encontrou 3 achados, corrigidos na Sprint (`java-jwt-decode-without-verify` no `JwtAuthFilter` e 2× `dependabot-missing-cooldown`). Após a correção:
   ```text
-  ✔ Scanning repository: specvora-service
-  ✔ Finished scanning 34 files across git tree
-  ✔ Verified Secrets Found: 0
-  ✔ Unverified Secrets: 0
-  [SUCCESS] No leaks detected! Exit code: 0
+  $ semgrep scan --config p/owasp-top-ten --config p/java --error .
+  Ran 96 rules on 57 files: 0 findings.          (exit code 0)
   ```
-- **Semgrep OSS:**
+- **TruffleHog** — gate do pipeline:
   ```text
-  Running 118 rules on 34 files:
-  Ran 118 rules on 34 files with 0 findings.
-  [SUCCESS] Semgrep found 0 blocking security issues. Exit code: 0
+  $ trufflehog git file://. --only-verified
+  finished scanning {"chunks": 249, "bytes": 436142, "verified_secrets": 0, "unverified_secrets": 0}   (exit code 0)
   ```
+  Auditoria sem `--only-verified`: 2 credenciais MongoDB **não verificadas** no histórico (`README.md`@`ac4a419`, `docker-compose.yml`@`5f39f2d`), removidas do código e tratadas como comprometidas.
 - **Documento Completo da Etapa 1:** Consulte [`DEVSECOPS.md`](DEVSECOPS.md) na raiz do repositório para o diagrama expandido e saídas completas.
 
 ---
@@ -116,11 +113,12 @@ flowchart TD
 
 ### 2.1. Criptografia Local em Repouso (`LocalEncryptionService.java`)
 
-Para proteger dados sensíveis de usuários e telemetria veicular antes de persistir no MongoDB, foi implementado o serviço [`LocalEncryptionService.java`](src/main/java/br/com/specvora_service/security/LocalEncryptionService.java):
+Para proteger dados sensíveis em repouso foi implementado o serviço [`LocalEncryptionService.java`](src/main/java/br/com/specvora_service/security/LocalEncryptionService.java):
 - **Algoritmo:** `AES-256-GCM` (*Galois/Counter Mode*), padrão criptográfico moderno de cifra autenticada (AEAD).
 - **Garantias:** Assegura confidencialidade e integridade dos dados, com proteção nativa contra adulteração (*tampering*).
 - **Vetor de Inicialização (IV):** Geração criptográfica segura de 12 bytes via `SecureRandom` para cada operação de cifragem, prefixado ao texto cifrado gerado.
-- **Validação:** A chave mestra exige entropia mínima de 256 bits (32 bytes). Caso não seja configurada em ambiente local, uma chave efêmera de alta entropia é gerada em memória para impedir falhas de execução.
+- **Chave:** derivada com SHA-256 do `AES_SECRET` fornecido pelo ambiente (sem valor padrão no código). Sem a variável, uma chave efêmera aleatória de 256 bits é gerada em memória.
+- **Uso atual:** cifra o registro de auditoria de cada usuário no `AuthService`. Aplicação a campos pessoais persistidos no MongoDB está prevista (ver `SECURITY_EVIDENCES.md` §2).
 
 ---
 
@@ -166,12 +164,12 @@ $$\text{ROLE\_ADMINISTRADOR} > \text{ROLE\_GESTOR} > \text{ROLE\_USER}$$
 
 1. **Dockerfile Multi-Stage ([`Dockerfile`](Dockerfile)):**
    - **Stage 1 (Builder):** Utiliza imagem Eclipse Temurin 21 JDK para compilar a aplicação. O compilador e o código-fonte descartado não são transferidos para o artefato final.
-   - **Stage 2 (Runtime):** Utiliza JRE 21 Alpine mínima.
+   - **Stage 2 (Runtime):** Utiliza apenas o JRE 21 (`eclipse-temurin:21-jre-jammy`), com `HEALTHCHECK` e `ENTRYPOINT` em *exec form*.
    - **Princípio do Menor Privilégio:** Criação de usuário e grupo dedicados não-root (`appuser:appgroup` com UID/GID 10001). A aplicação é executada sem privilégios de root no host.
 2. **Docker Compose ([`docker-compose.yml`](docker-compose.yml)):**
-   - Banco de dados MongoDB isolado em rede interna fechada (`backend-network`).
-   - Credenciais injetadas exclusivamente via variáveis de ambiente seguras.
-   - Limites de recursos definidos (CPU e Memória) para conter ataques de exaustão de recursos.
+   - Porta do MongoDB não publicada no host (acessível apenas pela rede interna do Compose).
+   - Nenhum segredo no arquivo: `JWT_SECRET`, `AES_SECRET` e credenciais do Mongo vêm do ambiente / `.env` (modelo em `.env.example`), e o Compose recusa subir sem eles.
+   - `no-new-privileges` nos dois serviços.
 
 ---
 
@@ -302,11 +300,11 @@ O plano de resposta estruturado abrange as 5 primeiras fases do ciclo de vida SA
 # Etapa 4: Pesquisa de Vulnerabilidades & Mitigação
 
 ### Objetivo da Etapa
-> **Objetivo:** Mapear e pesquisar vulnerabilidades críticas comuns em aplicações web e APIs para blindar a arquitetura da solução, estabelecendo uma análise comparativa profunda dos principais catálogos da indústria (OWASP Top 10 Web e OWASP API Security Top 10), correlacionando os riscos ao ecossistema do projeto e detalhando o plano de mitigação arquitetural.
+> **Objetivo:** Mapear e pesquisar vulnerabilidades críticas comuns em aplicações web, APIs e mobile para blindar a arquitetura da solução, com base no OWASP Top 10 Web, OWASP API Security Top 10, OWASP Mobile Top 10 e OWASP ASVS, correlacionando os riscos ao projeto e detalhando o plano de mitigação.
 
 ### Entrega Esperada
 > **Entrega:** Documento explicativo contendo:
-> 1. Pesquisa aprofundada dos riscos descritos nos guias **OWASP Top 10 Web (2021)** e **OWASP API Security Top 10 (2023)**.
+> 1. Pesquisa dos riscos descritos nos guias **OWASP Top 10 Web (2021)**, **OWASP API Security Top 10 (2023)** e **OWASP Mobile Top 10 (2024)**, e definição do nível de verificação **OWASP ASVS 5.0**.
 > 2. Matriz de Mapeamento de Risco Residual contextualizada para a API Specvora Service.
 > 3. Plano de Mitigação Arquitetural detalhado demonstrando como a arquitetura do projeto atua como Defesa em Profundidade (*Defense-in-Depth*).
 
@@ -334,6 +332,11 @@ O plano de resposta estruturado abrange as 5 primeiras fases do ciclo de vida SA
 | **A03** | Injeção NoSQL | `POST /vehicles`, `VehicleUpsertDTO` | Média | Crítico | **Baixo** | Consultas parametrizadas via Spring Data MongoDB Criteria + sanitização de chaves. |
 | **A02** | Falhas Criptográficas | `LocalEncryptionService`, Banco de Dados | Média | Alto | **Baixo** | Cifragem `AES-256-GCM` com IV randômico e chave de alta entropia. |
 | **A05 / API8** | Security Misconfiguration | Headers HTTP, CORS, Container Docker | Média | Médio | **Baixo** | Secure Headers OWASP (CSP, HSTS, X-Frame-Options) e Docker non-root (UID 10001). |
+| **M1 / A07** | Credenciais embutidas no app mobile | App da brigada ↔ `/auth/login` | Média | Crítico | **Médio** | Segredos só no servidor (variáveis de ambiente); app recebe apenas token de 2 h. |
+| **M3 / API5** | Autorização decidida no cliente | App ↔ `PUT`/`DELETE /vehicles` | Alta | Alto | **Baixo** | RBAC aplicado na `SecurityFilterChain`, independente da UI do app. |
+| **M5 / M9** | Comunicação e armazenamento inseguros no aparelho | Token JWT no dispositivo | Média | Alto | **Médio** | HSTS; recomendação de *pinning* e Keystore/Keychain no app. |
+
+**ASVS 5.0 — Nível 2 (alvo):** 11 de 15 requisitos-chave verificados atendidos. Lacunas: usuários de demonstração, revogação de token, cofre de chaves (KMS) e TLS de borda. Checklist completo em [`PESQUISA_VULNERABILIDADES_OWASP.md` §4.10](PESQUISA_VULNERABILIDADES_OWASP.md).
 
 ---
 
@@ -356,5 +359,5 @@ A arquitetura do **Specvora Service** adota 5 anéis de segurança concêntricos
 | **Etapa 1** | SAST (Semgrep), Secret Scanning (TruffleHog & Gitleaks) e CI/CD | [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)<br>[`DEVSECOPS.md`](DEVSECOPS.md)<br>[`.gitleaks.toml`](.gitleaks.toml) | **Concluído** (100%) |
 | **Etapa 2** | AES-256-GCM, Hardening de API, RBAC (3 Níveis) e Docker | [`LocalEncryptionService.java`](src/main/java/br/com/specvora_service/security/LocalEncryptionService.java)<br>[`RateLimitingFilter.java`](src/main/java/br/com/specvora_service/config/RateLimitingFilter.java)<br>[`SecurityConfig.java`](src/main/java/br/com/specvora_service/config/SecurityConfig.java)<br>[`Dockerfile`](Dockerfile)<br>[`SECURITY_EVIDENCES.md`](SECURITY_EVIDENCES.md) | **Concluído** (100%) |
 | **Etapa 3** | Logs Estruturados JSON, Alertas API/Mobile/IoT/ML e Resposta a Incidentes (PICERL) | [`SecurityAuditLogger.java`](src/main/java/br/com/specvora_service/security/SecurityAuditLogger.java)<br>[`LOGS_ALERTAS_INCIDENTES.md`](LOGS_ALERTAS_INCIDENTES.md) | **Concluído** (100%) |
-| **Etapa 4** | Pesquisa OWASP Web/API, Matriz de Riscos e Mitigação Arquitetural | [`PESQUISA_VULNERABILIDADES_OWASP.md`](PESQUISA_VULNERABILIDADES_OWASP.md) | **Concluído** (100%) |
-| **Garantia** | 62 Testes Automatizados Unitários e de Integração de Segurança | Executados via `.\mvnw.cmd test` | **62/62 Aprovados (BUILD SUCCESS)** |
+| **Etapa 4** | Pesquisa OWASP Web/API/Mobile e ASVS, Matriz de Riscos e Mitigação | [`PESQUISA_VULNERABILIDADES_OWASP.md`](PESQUISA_VULNERABILIDADES_OWASP.md) | **Concluído** (100%) |
+| **Garantia** | 80 Testes Automatizados Unitários e de Integração de Segurança | Executados via `./mvnw verify` | **80/80 Aprovados (BUILD SUCCESS)** |

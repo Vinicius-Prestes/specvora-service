@@ -5,18 +5,13 @@ title = "Specvora Service Gitleaks Configuration"
 # Estende as regras padrão do Gitleaks (mais de 150 regras conhecidas)
 useDefault = true
 
+# Allowlist mínima: apenas artefatos gerados. Código-fonte, pom.xml e scripts
+# continuam sendo inspecionados. Falsos-positivos pontuais vão em .gitleaksignore
+# (fingerprint commit:arquivo:regra:linha), nunca por caminho ou regex genérico.
 [allowlist]
-description = "Arquivos e caminhos permitidos (falso-positivos conhecidos)"
+description = "Artefatos de build (não versionados)"
 paths = [
-  '''^\.git/''',
-  '''target/''',
-  '''mvnw''',
-  '''mvnw\.cmd''',
-  '''pom\.xml$'''
-]
-regexes = [
-  '''mongodb://localhost:27017''',
-  '''specvora:***REMOVED***@localhost'''
+  '''(^|/)target/'''
 ]
 
 # Regra personalizada para proteger Service Account Keys do Firebase / Google Cloud
@@ -31,12 +26,21 @@ keywords = [
 ]
 
 # Regra personalizada para strings de conexão MongoDB com credenciais reais
+# (a lookahead ignora placeholders ${VAR} usados no docker-compose.yml)
 [[rules]]
 id = "mongodb-connection-string-with-credentials"
 description = "MongoDB connection string with credentials"
-regex = '''mongodb(?:\+srv)?:\/\/[a-zA-Z0-9_\-\.]+:[^@\s]+@[a-zA-Z0-9_\-\.]+'''
+regex = '''mongodb(?:\+srv)?:\/\/[a-zA-Z0-9_\-\.]+:[^@\s$]+@[a-zA-Z0-9_\-\.]+'''
 secretGroup = 0
 keywords = [
   "mongodb://",
   "mongodb+srv://"
 ]
+
+# Segredos JWT/AES atribuídos diretamente em arquivos de configuração
+[[rules]]
+id = "hardcoded-jwt-or-aes-secret"
+description = "JWT_SECRET / AES_SECRET com valor literal"
+regex = '''(?i)(JWT_SECRET|AES_SECRET)\s*[=:]\s*[^\s$\{]{16,}'''
+secretGroup = 0
+keywords = ["jwt_secret", "aes_secret"]

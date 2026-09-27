@@ -1,7 +1,11 @@
 package br.com.specvora_service.config;
 
 import br.com.specvora_service.auth.service.JwtTokenService;
+import br.com.specvora_service.security.SecurityAuditLogger;
+import br.com.specvora_service.security.SecurityAuditLogger.EventType;
+import br.com.specvora_service.security.SecurityAuditLogger.Severity;
 import com.auth0.jwt.exceptions.JWTVerificationException;
+import com.auth0.jwt.exceptions.TokenExpiredException;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
@@ -23,6 +27,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +39,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtTokenService jwtTokenService;
     private final ErrorResponseWriter errorResponseWriter;
+    private final SecurityAuditLogger securityAuditLogger;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -40,8 +47,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         if (path == null) {
             path = request.getRequestURI();
         }
+        // /auth/register passa pelo filtro: um administrador autenticado pode conceder perfis elevados
         return path.equals("/auth/login")
-                || path.equals("/auth/register")
                 || path.startsWith("/swagger-ui")
                 || path.startsWith("/v3/api-docs");
     }
@@ -60,6 +67,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         String token = authHeader.substring(7).trim();
 
         // 1. Validação via JWT nativo com claims, audience e roles (ADMINISTRADOR, GESTOR, USER)
+        TokenExpiredException expiredException = null;
         try {
             Authentication auth = jwtTokenService.getAuthentication(token);
             if (auth != null) {
@@ -73,6 +81,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 filterChain.doFilter(request, response);
                 return;
             }
+        } catch (TokenExpiredException ex) {
+            expiredException = ex;
         } catch (JWTVerificationException ignored) {
             // Token não é JWT nativo válido; tentará validar via Firebase caso ativo
         }
@@ -102,7 +112,21 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
 
-        // 3. Rejeição com formato padronizado ErrorResponseDTO
+        // 3. Registro do evento de segurança e rejeição com formato padronizado ErrorResponseDTO
+        if (expiredException != null) {
+            Instant expiredOn = expiredException.getExpiredOn();
+            securityAuditLogger.logFromRequest(request, EventType.AUTH_TOKEN_EXPIRED, Severity.WARN,
+                    jwtTokenService.getSubjectOfExpiredToken(token), HttpStatus.UNAUTHORIZED.value(),
+                    "Token de autenticação expirado recebido na requisição",
+                    Map.of("issuer", JwtTokenService.ISSUER,
+                            "token_expiration_time", String.valueOf(expiredOn),
+                            "expired_by_seconds", expiredOn != null ? Duration.between(expiredOn, Instant.now()).toSeconds() : -1));
+        } else {
+            securityAuditLogger.logFromRequest(request, EventType.AUTH_TOKEN_INVALID, Severity.WARN,
+                    null, HttpStatus.UNAUTHORIZED.value(),
+                    "Token com assinatura, emissor ou audiência inválidos",
+                    Map.of("reason", "INVALID_SIGNATURE_OR_CLAIMS"));
+        }
         errorResponseWriter.write(response, request, HttpStatus.UNAUTHORIZED,
                 "Token JWT inválido, expirado ou não reconhecido");
     }

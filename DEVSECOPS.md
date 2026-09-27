@@ -11,7 +11,7 @@ O conceito de **DevSecOps** une Desenvolvimento (Dev), Segurança (Sec) e Opera�
 Com a abordagem **Shift-Left**:
 - A segurança é antecipada para as fases mais iniciais do desenvolvimento (*commit*, *pull request* e *build*).
 - O desenvolvedor recebe feedback imediato no próprio fluxo de trabalho (pull request).
-- Vulnerabilidades conhecidas em bibliotecas, falhas no código proprietário e credenciais acidentalmente expostas são bloqueadas por **Quality Gates** automáticos antes de atingir qualquer ambiente compartilhado.
+- Falhas no código proprietário (SAST) e credenciais acidentalmente expostas (Secret Scanning) são bloqueadas por **Quality Gates** automáticos antes de atingir qualquer ambiente compartilhado.
 
 ```
 Tradicional:  [ Dev ] ──────────> [ Ops ] ──────────> [ Sec (Auditoria Tardia) ]
@@ -22,158 +22,133 @@ DevSecOps:    [ Dev + Sec ] ───> [ Build + Sec ] ───> [ Ops + Sec ] 
 
 ## 2. Desenho do Pipeline DevSecOps (CI/CD)
 
-O pipeline foi construído sobre o **GitHub Actions** ([`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)), integrando verificações de código, dependências, credenciais, infraestrutura como código (IaC), integridade de build e segurança de artefatos.
+O pipeline roda no **GitHub Actions** ([`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)) a cada `push` e `pull_request` na `main`. O foco obrigatório da Etapa 1 são os dois gates **bloqueantes** de análise de código: **Semgrep (SAST)** e **TruffleHog (Secret Scanning)**. SCA e Container Security aparecem no diagrama apenas como **pontos de encaixe informativos** (não bloqueantes), descritos na [seção 4](#4-pesquisa-orientada-sca-e-container-security).
 
-### Diagrama de Fluxo e Quality Gates
+### Diagrama do CI/CD com os pontos de execução do Semgrep e do TruffleHog
 
 ```mermaid
 flowchart TD
-    %% Estilo
     classDef dev fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
-    classDef gate fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
+    classDef gate fill:#fff3e0,stroke:#f57c00,stroke-width:3px;
+    classDef info fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5;
     classDef test fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
     classDef deploy fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
     classDef fail fill:#ffebee,stroke:#d32f2f,stroke-width:2px;
 
-    Dev[Desenvolvedor / Git Commit]:::dev --> Push[Git Push / Pull Request]:::dev
+    Dev[Commit do desenvolvedor]:::dev --> Push[Push / Pull Request na main]:::dev
 
-    subgraph Phase1 ["Estágio 1: Shift-Left Security Checks (Paralelo)"]
-        Push --> SecretScan["1. Secret Scanning<br/>(TruffleHog & Gitleaks)"]:::gate
-        Push --> SCA["2. SCA Dependency Scan<br/>(Dependabot / Trivy FS / Snyk)"]:::gate
-        Push --> SAST["3. SAST Code Analysis<br/>(Semgrep / SonarCloud)"]:::gate
-        Push --> IaC["4. IaC Security Scan<br/>(Trivy Config)"]:::gate
+    subgraph J1 ["Job 1 — Secret Scanning"]
+        TH["🔑 TruffleHog<br/>histórico Git · --only-verified"]:::gate
+        GL["Gitleaks<br/>.gitleaks.toml + .gitleaksignore"]:::gate
+    end
+    subgraph J3 ["Job 3 — SAST"]
+        SG["🔍 Semgrep 1.90.0<br/>p/owasp-top-ten + p/java · --error · SARIF"]:::gate
+    end
+    subgraph J2 ["Job 2 — SCA (informativo)"]
+        TFS["Trivy FS + Snyk opcional<br/>SARIF · não bloqueia"]:::info
     end
 
-    SecretScan -->|Falha: Segredo Detectado| Block1[Bloqueio do PR / CI Falhou]:::fail
-    SCA -->|Falha: CVE Crítica Encontrada| Block2[Bloqueio do PR / CI Falhou]:::fail
-    SAST -->|Falha: Vulnerabilidade no Código| Block3[Bloqueio do PR / CI Falhou]:::fail
-    IaC -->|Falha: Misconfiguration no Docker/IaC| Block4[Bloqueio do PR / CI Falhou]:::fail
+    Push --> TH --> GL
+    Push --> SG
+    Push --> TFS
 
-    SecretScan & SCA & SAST & IaC -->|Aprovado em todas as checagens| Build["5. Build & Tests<br/>(Maven Clean Verify + JUnit + JaCoCo)"]:::test
+    TH -->|segredo verificado| X1[❌ Pipeline falha]:::fail
+    GL -->|segredo detectado| X1
+    SG -->|qualquer achado| X2[❌ Pipeline falha]:::fail
 
-    Build -->|Falha nos Testes / Compilação| Block5[Falha no Build / Testes]:::fail
-    Build -->|Build OK| Artifact["Geração do Artefato JAR + Surefire Report"]:::test
-
-    subgraph Phase2 ["Estágio 2: Artifact & Container Security"]
-        Artifact --> DockerBuild["Build da Imagem Docker<br/>(Multi-stage & Non-root appuser 10001)"]:::test
-        DockerBuild --> ContainerScan["6. Container Security Scan<br/>(Trivy Image Scan + SARIF)"]:::gate
-    end
-
-    ContainerScan -->|Falha: Vulnerabilidade no SO/Base| Block6[Bloqueio de Release]:::fail
-
-    subgraph Phase3 ["Estágio 3: Quality Gate & Continuous Deployment"]
-        ContainerScan -->|Aprovado em todos os Gates| GateFinal{"Quality Gate Aprovado?<br/>(Branch: main & Push)"}:::gate
-        GateFinal -->|Sim| Deploy["7. Continuous Deployment (CD)<br/>Deploy Seguro em Staging/Prod Ford"]:::deploy
-        GateFinal -->|Não / PR Aberto| PRReady[Feedback no PR - Pronto para Merge]:::dev
-    end
+    GL & SG & TFS --> Build["Job 4 — Build & Testes<br/>mvn verify · JUnit · JaCoCo"]:::test
+    Build -->|teste falhou| X3[❌ Pipeline falha]:::fail
+    Build --> Img["Job 5 — Container (informativo)<br/>docker build + Trivy image · SARIF"]:::info
+    Img --> Deploy["Job 6 — Deploy (somente push na main)"]:::deploy
 ```
 
-### Representação Textual das Etapas
-
-| Etapa | Ferramenta | Momento | Objetivo Principal | Ação em Caso de Falha |
+| # | Job | Ferramenta | Bloqueia? | Saída |
 |---|---|---|---|---|
-| **1. Secret Scanning** | **TruffleHog** & **Gitleaks** | Pré-build / PR | Detectar chaves privadas (Firebase, JWT, TLS), strings de conexão (MongoDB) e credenciais vazadas | **Bloqueia o pipeline imediatamente (`exit-code: 1`)** |
-| **2. SCA** | **Dependabot**, **Trivy FS** & **Snyk** | Pré-build / PR | Identificar vulnerabilidades conhecidas (CVEs) nas dependências diretas e transitivas do Maven | **Bloqueia se severidade $\ge$ Alta (`exit-code: 1`) e publica SARIF** |
-| **3. SAST** | **Semgrep** & **SonarCloud** | Pré-build / PR | Analisar o código Java contra OWASP Top 10 e CWEs (NoSQLi, XSS, tratamento de erros) | **Bloqueia em regras com severidade de erro (`--error`) e publica SARIF** |
-| **4. IaC Security** | **Trivy Config** | Pré-build / PR | Analisar configurações de infraestrutura (`Dockerfile`, `docker-compose.yml`) | **Bloqueia em configurações inseguras (`exit-code: 1`)** |
-| **5. Build & Tests** | **Maven Wrapper** / **JUnit** | Pós-segurança | Compilar com Java 21, validar testes unitários e de integração (`VehicleSecurityIntegrationTest`) | **Falha o build e exporta relatórios Surefire** |
-| **6. Container Scan** | **Docker** & **Trivy** | Pós-build | Escanear a imagem Docker multi-stage (`appuser` 10001) contra vulnerabilidades no SO base | **Bloqueia vulnerabilidades críticas/altas (`exit-code: 1`) e publica SARIF** |
-| **7. Continuous Deploy** | **GitHub Actions CD** | Pós-gates (apenas `main`) | Realizar deploy da versão homologada e íntegra | **Deploy impedido se qualquer gate anterior falhar** |
+| 1 | `secret-scanning` | **TruffleHog** v3.97.9 + Gitleaks v2.3.9 | **Sim** — segredo verificado / detectado | Log do job |
+| 2 | `sca` | Trivy FS (+ Snyk se houver `SNYK_TOKEN`) | Não (informativo) | SARIF `trivy-fs` |
+| 3 | `sast` | **Semgrep** 1.90.0 | **Sim** — `--error` falha com qualquer achado | SARIF `semgrep-sast` |
+| 4 | `build-and-test` | Maven + JUnit 5 + JaCoCo | **Sim** — teste falhou | Surefire + relatório JaCoCo |
+| 5 | `container-security` | Docker + Trivy image | Não (informativo) | SARIF `trivy-image` |
+| 6 | `deploy` | GitHub Actions | Só roda se 1–5 terminarem | — |
 
 ---
 
-## 3. Detalhamento das Etapas e Ferramentas
+## 3. Análise de Código: Semgrep e TruffleHog
 
-### 3.1. Secret Scanning (TruffleHog & Gitleaks)
+### 3.1. SAST com Semgrep
 
-- **O que é:** Verificação automatizada do código-fonte e histórico de commits em busca de segredos acidentalmente commitados, como tokens de API, certificados, chaves privadas e credenciais de banco.
-- **Ferramentas utilizadas:**
-  - **TruffleHog (`trufflesecurity/trufflehog`):** Scanner de detecção profunda de credenciais e chaves ativas em commits e branches, testando automaticamente a validade criptográfica dos segredos encontrados (`--only-verified`).
-  - **Gitleaks (`gitleaks-action`):** Scanner open-source de alta performance integrado ao workflow com o arquivo de configuração [`.gitleaks.toml`](.gitleaks.toml). Ele inspeciona o código atual e o histórico do Git (`fetch-depth: 0`). A *allowlist* é restrita a arquivos estritamente necessários (como scripts de build) e **não isenta segredos em arquivos de configuração como `application.yml`**.
-  - **GitGuardian:** Plataforma complementar de monitoramento contínuo em nível organizacional que vigia repositórios na nuvem em tempo real para prevenção contra vazamento de segredos em ecossistemas colaborativos.
-- **Relação com o Specvora Service:**
-  - O projeto utiliza credenciais do **Firebase Admin SDK** (arquivo JSON com chave privada RSA), chaves assimétricas/simétricas de JWT e string de conexão do **MongoDB** (`MONGODB_URI`).
-  - As regras e detectores do TruffleHog e Gitleaks impedem que chaves privadas (`BEGIN PRIVATE KEY`), tokens e URIs do MongoDB com usuário e senha em texto plano sejam commitados acidentalmente.
+- **Execução:** job `sast`, container `semgrep/semgrep:1.90.0`, comando `semgrep scan --config p/owasp-top-ten --config p/java --sarif --error`.
+- **Regras aplicadas:** os pacotes oficiais do Semgrep Registry `p/java` (60 regras) e `p/owasp-top-ten` (559 regras, multilinguagem). Sobre os arquivos deste repositório o Semgrep seleciona **96 regras aplicáveis** (Java, YAML, Dockerfile e multilinguagem).
+- **Principais famílias de regras e o que verificam no Specvora:**
 
-### 3.2. SCA — Software Composition Analysis (Dependabot, Trivy & Snyk)
+| Família (prefixo do `rule id`) | Exemplos de regras | Onde se aplica no projeto |
+|---|---|---|
+| `java.lang.security.audit.crypto.*` | `use-of-aes-ecb`, `gcm-nonce-reuse`, `no-static-initialization-vector`, `use-of-md5`, `use-of-sha1` | `LocalEncryptionService` (AES-256-GCM, IV aleatório por operação) e hashes SHA-256 |
+| `java.java-jwt.security.*` | `java-jwt-hardcoded-secret`, `java-jwt-none-alg`, `java-jwt-decode-without-verify` | `JwtTokenService` e `JwtAuthFilter` (HS256 fixo, segredo vindo do ambiente, todo token é verificado) |
+| `java.spring.security.injection.*` / `java.spring.security.audit.*` | `tainted-sql-string`, `tainted-system-command`, `tainted-file-path`, `spring-unvalidated-redirect`, `spring-actuator-fully-enabled` | Controllers e `VehicleRepositoryImpl` (consultas MongoDB por `Criteria`, sem concatenação) |
+| `java.lang.security.audit.xss.*`, `servletresponse-writer-xss` | `no-direct-response-writer` | `ErrorResponseWriter` (escreve JSON serializado, nunca HTML refletido) |
+| `java.lang.security.audit.xxe.*`, `jackson-unsafe-deserialization` | `documentbuilderfactory-disallow-doctype-decl-missing` | Desserialização de corpo JSON (Jackson sem *default typing*) |
+| `java.lang.security.audit.crlf-injection-logs` | — | `SecurityAuditLogger` (log em JSON serializado) |
+| `yaml.github-actions.security.*` | `run-shell-injection`, `github-actions-mutable-action-tag`, `pull-request-target-code-checkout` | `.github/workflows/devsecops.yml` (actions fixadas por SHA) |
+| `dockerfile.security.*`, `yaml.docker-compose.security.*` | `missing-user`, `last-user-is-root`, `privileged-service` | `Dockerfile` (usuário 10001) e `docker-compose.yml` |
 
-- **O que é:** Análise automatizada das bibliotecas e dependências de terceiros listadas no gerenciador de pacotes (`pom.xml`). O SCA garante que componentes de código aberto não introduzam vulnerabilidades conhecidas (CVEs/NVD) para o ecossistema.
-- **Ferramentas utilizadas:**
-  - **Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)):** Monitora semanalmente o arquivo `pom.xml` e as GitHub Actions do projeto, abrindo Pull Requests automáticos com o bump de versões seguras.
-  - **Trivy FS (`aquasecurity/trivy-action`):** Scanner open-source integrado nativamente com `exit-code: 1` para severidades `CRITICAL,HIGH` (com `ignore-unfixed: true`), gerando relatório em formato SARIF exportado para a aba **Security > Code scanning** do GitHub.
-  - **Snyk (`snyk/actions/maven`):** Análise profunda opcional de dependências diretas e transitivas ativada com segurança via variável de ambiente de job (`env: SNYK_TOKEN`), sem invalidar o workflow quando o segredo não estiver configurado.
-- **Relação com o Specvora Service:**
-  - Protege bibliotecas críticas como `bucket4j-core` (usada no rate limiting), `firebase-admin` (autenticação), `spring-boot-starter-security`, `java-jwt` e drivers do `mongodb`.
+- **Achados reais corrigidos durante a Sprint** (varredura local com a mesma versão e as mesmas regras do CI):
 
-### 3.3. SAST — Static Application Security Testing (Semgrep & SonarCloud)
+| Regra | Arquivo | Correção |
+|---|---|---|
+| `java-jwt-decode-without-verify` | `JwtAuthFilter.java` | O titular de um token expirado passou a ser obtido com verificação de assinatura, issuer e audience (`JwtTokenService.getSubjectOfExpiredToken`), em vez de `JWT.decode()` |
+| `dependabot-missing-cooldown` (2×) | `.github/dependabot.yml` | Adicionado `cooldown.default-days: 7` para não adotar versões recém-publicadas (proteção contra pacotes maliciosos) |
 
-- **O que é:** Análise estática do código-fonte proprietário sem necessidade de executar a aplicação. Busca padrões de código vulneráveis, má utilização de APIs, injeções e falhas de criptografia.
-- **Ferramentas utilizadas:**
-  - **Semgrep:** Scanner semântico leve e declarativo executado diretamente no pipeline (`semgrep/semgrep`). Utiliza os pacotes de regras oficiais `p/owasp-top-ten` e `p/java` com o parâmetro `--error` para falhar em achados críticos e gerar output SARIF.
-  - **SonarCloud / SonarQube:** Plataforma corporativa de inspeção contínua de qualidade de código (*Clean Code*), mapeando *Security Hotspots*, cobertura de testes e dívida técnica.
-- **Relação com o Specvora Service:**
-  - Verifica se não existem concatenações manuais de queries MongoDB (garantindo o uso exclusivo de `MongoTemplate` com `Criteria` parametrizada contra NoSQL Injection).
-  - Garante ausência de sanitizações incompletas em DTOs, sanitização de chaves de mapas no MongoDB (`categories`), e valida o tratamento de exceções (evitando vazamento de stack traces).
+### 3.2. Secret Scanning com TruffleHog
 
-### 3.4. IaC & Container Security (Docker & Trivy)
-
-- **O que é:** Análise de vulnerabilidades na infraestrutura como código (IaC) e na imagem de container gerada para distribuição da aplicação.
-- **Práticas aplicadas no projeto:**
-  - **Dockerfile Multi-Stage real:** Estágio de build isolado (`eclipse-temurin:21-jdk-jammy`) gerando o JAR via Maven e estágio final enxuto com apenas JRE 21 (`eclipse-temurin:21-jre-jammy`).
-  - **Execução como usuário não-root:** Criação e uso estrito do usuário `appuser` (UID/GID 10001) para cumprir o princípio do menor privilégio, impedindo que um invasor obtenha permissões de root no host em caso de container breakout.
-  - **Exec Form e Healthcheck:** `ENTRYPOINT ["java", "-jar", "/app/app.jar"]` para recepção direta de sinais de encerramento (`SIGTERM`/`SIGINT`) pela JVM, e `HEALTHCHECK` periódico.
-  - **Scan de IaC (`trivy config`):** Varre arquivos de configuração de infraestrutura (`Dockerfile`, `docker-compose.yml`) buscando misconfigurations antes do build.
-  - **Scan de Container (`trivy image`):** Analisa a imagem construída procurando CVEs no SO antes de autorizar o envio ao registro de containers, gerando arquivo SARIF.
-
-### 3.5. Deploy Contínuo com Quality Gate (CD)
-
-- **O que é:** Automação da entrega de software garantindo que nenhum deploy ocorra a menos que todos os critérios de qualidade e segurança sejam satisfeitos.
-- **Funcionamento:**
-  - O job `deploy` possui dependência estrita de todos os estágios anteriores: `needs: [secret-scanning, sca, sast, iac-scan, build-and-test, container-security]`.
-  - Executado apenas na branch `main` e em eventos de `push` (ou merges de PR aprovados).
-  - Se qualquer ferramenta anterior reportar uma vulnerabilidade bloqueante ou teste com falha, o pipeline é interrompido imediatamente (*circuit breaker* de segurança).
+- **Execução:** job `secret-scanning`, action `trufflesecurity/trufflehog` v3.97.9 com `--only-verified`, sobre o histórico Git (`fetch-depth: 0`) entre a branch padrão e o `HEAD`.
+- **Como funciona:** mais de 800 detectores reconhecem formatos de credenciais (chaves AWS/GCP, tokens GitHub, URIs MongoDB, chaves privadas etc.) e, para cada candidato, o TruffleHog **tenta autenticar no serviço de origem**. Com `--only-verified`, o gate só falha para segredos confirmadamente válidos, eliminando falsos-positivos.
+- **Complemento:** o Gitleaks roda no mesmo job com regras próprias em [`.gitleaks.toml`](.gitleaks.toml) (chave privada de Service Account Firebase, URI MongoDB com senha, `JWT_SECRET`/`AES_SECRET` com valor literal). Exceções só por *fingerprint* em [`.gitleaksignore`](.gitleaksignore).
+- **Achados reais** (varredura local de todo o histórico, modo sem `--only-verified`): 2 credenciais **não verificadas** do MongoDB (`specvora:***REMOVED***`), em `README.md` (commit `ac4a419`) e `docker-compose.yml` (commit `5f39f2d`). Ambas eram credenciais de desenvolvimento; foram removidas do código (o `docker-compose.yml` passou a ler segredos do ambiente/`.env`) e devem ser consideradas comprometidas e rotacionadas.
 
 ---
 
-## 4. Política de Quality Gates e Severidade
+## 4. Pesquisa Orientada: SCA e Container Security
 
-Para que a segurança não se torne um gargalo e mantenha a previsibilidade, as vulnerabilidades são classificadas por severidade de acordo com o padrão **CVSS** (Common Vulnerability Scoring System):
+Estas práticas **não são exigidas como gate** nesta Sprint; o pipeline as executa em modo informativo (publicam SARIF, não bloqueiam) para mostrar onde entram no ecossistema.
 
-| Severidade | CVSS Score | Critério no Pipeline | Ação Requerida |
-|---|---|---|---|
-| **Crítica (Critical)** | 9.0 – 10.0 | **Bloqueio Total** do PR e Deploy (`exit-code: 1`) | Correção imediata ou atualização de biblioteca obrigatória |
-| **Alta (High)** | 7.0 – 8.9 | **Bloqueio** do Deploy em Produção | Deve ser corrigido antes da liberação da release |
-| **Média (Medium)** | 4.0 – 6.9 | Alerta no relatório / Warning SARIF | Backlog de melhorias técnicas / próximo sprint |
-| **Baixa (Low)** | 0.1 – 3.9 | Informativo / Sugestão | Acompanhamento contínuo |
+### 4.1. SCA — Software Composition Analysis
+
+- **O que é:** análise das bibliotecas de terceiros declaradas no gerenciador de pacotes (`pom.xml`) contra bases de vulnerabilidades conhecidas (CVE/NVD, GitHub Advisory, OSV). Cobre dependências diretas e **transitivas**, que costumam ser a maior parte do código executado.
+- **Por que importa aqui:** o Specvora depende de componentes sensíveis — `spring-boot-starter-security`, `java-jwt`, `firebase-admin`, `bucket4j-core` e o driver MongoDB. Uma CVE em qualquer um deles afeta diretamente autenticação, autorização ou disponibilidade.
+- **Onde entra no ecossistema:**
+  1. **No IDE / pré-commit** — plugins como Snyk ou Trivy alertam ao adicionar uma dependência.
+  2. **No Pull Request** — `trivy fs` / `snyk test` comparam o `pom.xml` do PR com as bases de CVE (job `sca` deste pipeline).
+  3. **Continuamente** — o **Dependabot** ([`.github/dependabot.yml`](.github/dependabot.yml)) abre PRs de atualização semanais para Maven e GitHub Actions.
+  4. **Em produção** — SBOM (CycloneDX/SPDX) versionado por release, permitindo responder rapidamente “estamos afetados?” quando surge uma nova CVE.
+- **Ferramentas de referência:** Dependabot, Trivy, Snyk, OWASP Dependency-Check, Grype.
+
+### 4.2. Container Security
+
+- **O que é:** proteção da imagem que empacota a aplicação e do ambiente onde ela executa: pacotes do sistema operacional base, configuração da imagem e privilégios em tempo de execução.
+- **Práticas já aplicadas no [`Dockerfile`](Dockerfile):** build *multi-stage* (JDK só no estágio de build, JRE no final), usuário não-root `appuser` (UID 10001), `ENTRYPOINT` em *exec form*, `HEALTHCHECK` e `no-new-privileges` no `docker-compose.yml`.
+- **Onde entra no ecossistema:**
+  1. **Build** — scan da imagem (`trivy image`, job `container-security` deste pipeline) contra CVEs do SO base e das bibliotecas empacotadas.
+  2. **Registry** — scan contínuo das imagens armazenadas (ECR, ACR, Harbor) e assinatura com Cosign/Sigstore.
+  3. **Admissão no cluster** — políticas (Kyverno, OPA Gatekeeper) que recusam imagens não assinadas, com CVE crítica ou rodando como root.
+  4. **Runtime** — detecção de comportamento anômalo no container (Falco).
+- **Ferramentas de referência:** Trivy, Grype, Docker Scout, Cosign, Falco.
 
 ---
 
-## 5. Como Executar os Scans de Segurança Localmente
+## 5. Como Executar as Varreduras Localmente
 
-O desenvolvedor pode e deve rodar as mesmas ferramentas na sua máquina antes de enviar o código (*Pre-commit*):
-
-### A. Executar Gitleaks localmente
 ```bash
-docker run --rm -v ${PWD}:/path zricethezav/gitleaks:latest detect --source="/path" -v --config="/path/.gitleaks.toml"
-```
+# SAST — mesmas regras do CI
+docker run --rm -v "${PWD}:/src" semgrep/semgrep:1.90.0 semgrep scan --config p/owasp-top-ten --config p/java --error
 
-### B. Executar Semgrep (SAST) localmente
-```bash
-docker run --rm -v "${PWD}:/src" semgrep/semgrep semgrep scan --config "p/owasp-top-ten" --config "p/java" --error
-```
+# Secret Scanning — todo o histórico Git
+docker run --rm -v "${PWD}:/repo" trufflesecurity/trufflehog:3.97.9 git file:///repo --only-verified
+docker run --rm -v "${PWD}:/path" zricethezav/gitleaks:v8.24.3 git /path --config /path/.gitleaks.toml -v
 
-### C. Executar Trivy (SCA & IaC) localmente
-```bash
-# Scan de dependências do diretório (SCA)
+# SCA e Container (informativos)
 docker run --rm -v "${PWD}:/root" aquasec/trivy:latest fs /root --severity CRITICAL,HIGH
-
-# Scan de configuração de infraestrutura (IaC)
-docker run --rm -v "${PWD}:/root" aquasec/trivy:latest config /root
-```
-
-### D. Scan da imagem Docker após build
-```bash
-docker build -t specvora-service:local .
+docker build -t specvora-service:local . && \
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image specvora-service:local --severity CRITICAL,HIGH
 ```
 
@@ -185,190 +160,62 @@ Para habilitar a integração completa em repositório GitHub:
 1. Navegue até o repositório em **Settings > Secrets and variables > Actions**.
 2. Adicione os seguintes secrets caso utilize serviços externos:
    - `SNYK_TOKEN`: Token obtido em [snyk.io](https://snyk.io) (o workflow utiliza Trivy FS automaticamente e ignora o passo do Snyk com segurança se o token não for fornecido).
-   - `SONAR_TOKEN`: Token do SonarCloud para análise corporativa (opcional).
 3. Habilite **Dependency Graph** e **Dependabot alerts** em **Settings > Code security and analysis**.
 4. O GitHub Actions executará automaticamente o workflow [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml) a cada push ou pull request na branch `main`.
 5. Os relatórios gerados via SARIF são indexados automaticamente na aba **Security > Code scanning**.
 
 ---
 
-## 7. Execução do Pipeline no Projeto Ford
-
-No ecossistema corporativo da **Ford** (englobando engenharia de manufatura, frotas conectadas e serviços de brigada de emergência), a governança do ciclo de vida de software segue rigorosos padrões de conformidade e segurança da informação:
-
-```
-[ feature/* ] ──PR──> [ develop ] ──────> [ release/* ] ──────> [ main ]
-      │                     │                     │                  │
-   Gates 1-4           Deploy DEV              Deploy HML         Deploy PRD
-(Gitleaks/SCA/        (Automático)         (Aprovação Gestor)   (Aprovação Dupla:
-  SAST/Build)                                                  AppSec + Gestor)
-```
-
-### 7.1. Fluxo de Branches e Ambientes
-
-1. **`feature/*` $\to$ PR para `develop`:**
-   - **Quality Gates Obrigatórios:** Execução automática dos jobs de Secret Scanning (`Gitleaks`), SCA (`Trivy FS`), SAST (`Semgrep`) e Build/Testes (`JUnit 5`, `JaCoCo`).
-   - O merge só é autorizado com todas as checagens com status verde e aprovação de pelo menos um peer reviewer.
-2. **`develop` $\to$ Deploy em DEV (Ambiente de Desenvolvimento Ford):**
-   - Disparo automático de deploy no cluster Kubernetes/OpenShift corporativo da Ford (namespace `ford-dev`).
-   - Smoke tests e testes de integração com banco de dados MongoDB homologado.
-3. **`release/*` $\to$ Deploy em HML (Homologação / Staging):**
-   - Criação de release branch para testes integrados de ponta a ponta com sistemas de telemetria automotiva.
-   - Deploy controlado via **GitHub Environment `hml`**, exigindo aprovação formal do **Gestor Técnico da Squad**.
-4. **`main` $\to$ Deploy em PRD (Produção Ford):**
-   - Deploy em produção via **GitHub Environment `production`**.
-   - Exige **aprovação dupla obrigatória** (Líder Técnico/Gestor + Especialista de Segurança da Informação / AppSec).
-   - Assinatura criptográfica da imagem de container via **Cosign / Sigstore** e validação de janela de mudança (Change Advisory Board - CAB).
-
-### 7.2. Responsáveis e SLAs de Correção de Vulnerabilidades
-
-A matriz de severidade define os prazos máximos para saneamento de falhas reportadas pelas ferramentas do pipeline:
-
-| Severidade | Responsável | SLA Máximo | Procedimento em Caso de Exceção |
-|---|---|---|---|
-| **Crítica (Critical)** | Time de Engenharia + AppSec | **48 horas** | Bloqueio imediato do deploy. Exceção temporária somente mediante *Risk Acceptance* formal assinado pelo CISO corporativo. |
-| **Alta (High)** | Squad de Desenvolvimento | **7 dias** | Inclusão prioritária na sprint corrente. Falha de gate em PRD. |
-| **Média (Medium)** | Squad de Desenvolvimento | **30 dias** | Registro em backlog de segurança e correção na release subsequente. |
-| **Baixa (Low)** | Squad de Desenvolvimento | **90 dias** | Monitoramento e atualização via ciclos normais de manutenção e Dependabot. |
-
-### 7.3. Integrações Corporativas Ford
-
-- **Registro Corporativo de Imagens:** As imagens são publicadas em registry privado corporativo (ex.: JFrog Artifactory / Azure Container Registry / AWS ECR), sendo assinadas criptograficamente via chave pública/privada corporativa (`cosign sign`).
-- **Gestão de Segredos:** Nenhuma credencial trafega em código ou variáveis estáticas. Em produção, a aplicação consome segredos diretamente do **HashiCorp Vault** / **Azure Key Vault** por meio de injeção dinâmica em tempo de execução via CSI Secrets Store Driver.
-- **Visibilidade de Segurança (SIEM/SOC):** Os relatórios gerados em formato SARIF alimentam o painel de Code Scanning do GitHub Enterprise e são exportados via webhook para o SIEM corporativo da Ford (Splunk / Microsoft Sentinel) para auditoria contínua do time de SOC.
-
-### 7.4. Exemplo de Execução Ponta a Ponta
-
-1. Um engenheiro abre o PR `feat/telemetria-frota` ramificado a partir de `develop`.
-2. O desenvolvedor cometeu acidentalmente um arquivo com string de conexão de teste contendo credenciais.
-3. **Gate 1 (TruffleHog & Gitleaks):** Interrompe o workflow em menos de 15 segundos, apontando o segredo exposto e bloqueando o botão de merge.
-4. O desenvolvedor remove o arquivo, reescreve o commit e sobe novamente a alteração.
-5. **Gates 2 e 3 (SCA e SAST):** O Semgrep valida que não há injeções NoSQL e o Trivy FS valida o `pom.xml`.
-6. **Gate 4 (Build & Testes):** Compila o código Java 21 e executa 100% dos testes unitários e de integração (`VehicleSecurityIntegrationTest`).
-7. O PR é aprovado pelo Gestor, mergeado em `develop` e promovido para homologação após validação dos stakeholders de engenharia de frotas.
-
 ---
 
-## 8. Arquitetura de Segurança MQTT/TLS para IoT (Projeto Ford)
+## 7. Evidências e Resultados das Varreduras
 
-No ecossistema automotivo Ford, além da camada REST HTTP para gestão de dados, veículos e sensores de pátio (sensores de temperatura, telemetria e rastreadores de veículos) comunicam-se via protocolo de mensagens leves **MQTT** com rigoroso isolamento e criptografia.
+> **Prints do GitHub Actions:** anexar em `docs/evidencias/` as capturas da execução do workflow (visão geral dos jobs, log do job `secret-scanning` e do job `sast`, e a aba **Security > Code scanning** com os SARIF). As saídas abaixo são de execuções reais locais, com as mesmas versões e regras do CI, em 2026-09-26.
 
-```
-┌─────────────────────────────────┐                 ┌───────────────────────────────┐
-│     Sensores / Veículos IoT     │                 │   Serviço Specvora Backend    │
-│  (Certificado X.509 Individual) │                 │ (Spring Boot / Paho Factory)  │
-└────────────────┬────────────────┘                 └───────────────▲───────────────┘
-                 │                                                  │
-                 │ mTLS (Porta 8883)                                │ TLS (Porta 8883)
-                 │ Tópico: ford/sensores/%u/telemetria              │ Tópico: ford/sensores/+/telemetria
-                 ▼                                                  │
-       ┌────────────────────────────────────────────────────────────┴────────┐
-       │              Broker MQTT Mosquitto (Hardened / TLS 1.2+)            │
-       │  • Porta 1883 Desabilitada                                          │
-       │  • mTLS Obrigatório (require_certificate true)                      │
-       │  • Autenticação por CN de Certificado (use_identity_as_username)   │
-       │  • ACLs Estritas por Tópico e Perfil de Acesso                      │
-       └─────────────────────────────────────────────────────────────────────┘
-```
+### 7.1. Semgrep — antes da correção (3 achados)
 
-### 8.1. Broker Mosquitto com TLS 1.2+ e mTLS
+```text
+$ semgrep scan --config p/owasp-top-ten --config p/java --metrics=off .
+  Scanning 68 files tracked by git with 560 Code rules:
+  Language      Rules   Files          Origin      Rules
+  <multilang>       7      57          Community     560
+  java             60      34
+  yaml             25       4
+  dockerfile        4       1
 
-A comunicação com o broker central Mosquitto é configurada para rejeitar texto plano (porta 1883 desativada) e operar exclusivamente sobre a porta segura **8883** com **Mutual TLS (mTLS)**:
-
-```conf
-# /mosquitto/config/mosquitto.conf
-listener 8883
-protocol mqtt
-
-# Criptografia em trânsito
-tls_version tlsv1.2
-cafile   /mosquitto/certs/ca-ford-corp.crt
-certfile /mosquitto/certs/server.crt
-keyfile  /mosquitto/certs/server.key
-
-# mTLS: Cada dispositivo/sensor deve apresentar seu próprio certificado X.509
-require_certificate true
-use_identity_as_username true
-allow_anonymous false
-
-# Controle de acesso baseado em listas (ACL)
-acl_file /mosquitto/config/acl
+Ran 96 rules on 57 files: 3 findings.
+  package_managers.dependabot.dependabot-missing-cooldown   .github/dependabot.yml:4    MEDIUM
+  package_managers.dependabot.dependabot-missing-cooldown   .github/dependabot.yml:17   MEDIUM
+  java.java-jwt.security.audit.jwt-decode-without-verify    src/main/java/.../config/JwtAuthFilter.java:139   WARNING
 ```
 
-### 8.2. Controle de Acesso por Tópico e Perfil (ACL)
+### 7.2. Semgrep — depois da correção
 
-As políticas de acesso segregam publicadores (dispositivos IoT) de consumidores (backend e painéis de gestão), impedindo que um sensor espione dados de outro:
-
-```conf
-# /mosquitto/config/acl
-
-# 1. Dispositivos e sensores IoT: permissão de escrita restrita ao seu próprio CN/UID
-pattern write ford/sensores/%u/telemetria
-
-# 2. Backend Specvora: permissão de leitura em todas as telemetrias de sensores
-user specvora-backend
-topic read ford/sensores/+/telemetria
-
-# 3. Aplicativo de Monitoramento: escuta canais de alerta operacionais
-user monitor-app
-topic read ford/alertas/#
-
-# 4. Painel de Gestão: leitura de relatórios agregados e telemetria
-user gestor-dashboard
-topic read ford/metricas/#
+```text
+$ semgrep scan --config p/owasp-top-ten --config p/java --metrics=off --error .
+Ran 96 rules on 57 files: 0 findings.
+$ echo $?
+0
 ```
 
-### 8.3. Cliente Spring Integration / Paho MQTT com TLS
+### 7.3. TruffleHog — gate do pipeline (`--only-verified`)
 
-No código do backend Spring Boot, a conexão ao broker MQTT utiliza `MqttPahoClientFactory` com `SSLSocketFactory` gerenciado e verificação estrita de hostname contra ataques Man-in-the-Middle (MITM):
-
-```java
-@Configuration
-public class MqttSecurityConfig {
-
-    @Bean
-    public MqttPahoClientFactory mqttClientFactory(SSLSocketFactory sslSocketFactory,
-                                                   @Value("${mqtt.username}") String mqttUser,
-                                                   @Value("${mqtt.password}") String mqttPass) {
-        MqttConnectOptions options = new MqttConnectOptions();
-        options.setServerURIs(new String[]{"ssl://mqtt.ford.local:8883"});
-        options.setSocketFactory(sslSocketFactory); // Valida CA da Ford e envia certificado do cliente
-        options.setHttpsHostnameVerificationEnabled(true); // Previne MITM
-        options.setUserName(mqttUser);
-        options.setPassword(mqttPass.toCharArray()); // Injetado via Vault ou LocalEncryptionService
-        options.setCleanSession(true);
-        options.setAutomaticReconnect(true);
-
-        DefaultMqttPahoClientFactory factory = new DefaultMqttPahoClientFactory();
-        factory.setConnectionOptions(options);
-        return factory;
-    }
-}
+```text
+$ trufflehog git file://. --only-verified
+trufflehog  finished scanning  {"chunks": 249, "bytes": 436142, "verified_secrets": 0,
+            "unverified_secrets": 0, "scan_duration": "10.05s", "trufflehog_version": "3.97.9"}
+$ echo $?
+0
 ```
 
-### 8.4. Criptografia em Trânsito HTTP (HTTPS/TLS) na API
+### 7.4. TruffleHog — auditoria completa (inclui não verificados)
 
-Para garantir proteção integral ponta a ponta da camada de comunicação HTTP, a API pode ser configurada com certificados TLS 1.3 / 1.2 nativos no `application.yml`:
-
-```yaml
-server:
-  port: 8443
-  ssl:
-    enabled: true
-    bundle: api-tls
-  http2:
-    enabled: true
-
-spring:
-  ssl:
-    bundle:
-      pem:
-        api-tls:
-          keystore:
-            certificate: ${TLS_CERT_PATH:/etc/ssl/certs/api-cert.pem}
-            private-key: ${TLS_KEY_PATH:/etc/ssl/certs/api-key.pem}
-          options:
-            enabled-protocols: TLSv1.3,TLSv1.2
+```text
+$ trufflehog git file://. --json
+Detector  Verified  Arquivo              Linha  Commit
+MongoDB   false     docker-compose.yml   7      5f39f2d
+MongoDB   false     README.md            232    ac4a419
+finished scanning  {"verified_secrets": 0, "unverified_secrets": 2}
 ```
 
-Essa especificação garante que todos os dados veiculares e telemetrias transitando entre sensores, brokers e clientes REST contem com garantia de autenticidade, integridade e confidencialidade.
+Tratamento: credenciais removidas do código atual, `docker-compose.yml` lendo segredos do ambiente e fingerprints históricos registrados no `.gitleaksignore` após a rotação.

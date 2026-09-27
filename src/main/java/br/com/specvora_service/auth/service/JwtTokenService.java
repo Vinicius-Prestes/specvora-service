@@ -93,6 +93,24 @@ public class JwtTokenService {
         return new UsernamePasswordAuthenticationToken(username, null, authorities);
     }
 
+    /**
+     * Verifica assinatura, issuer e audience de um token já sabidamente expirado, sem aplicar a expiração.
+     * Usado apenas para identificar o titular no log de auditoria; nunca para autenticar.
+     */
+    public String getSubjectOfExpiredToken(String token) {
+        try {
+            return JWT.require(hmacAlgorithm)
+                    .withIssuer(ISSUER)
+                    .withAudience(AUDIENCE)
+                    .acceptExpiresAt(Duration.ofDays(365).toSeconds())
+                    .build()
+                    .verify(token)
+                    .getSubject();
+        } catch (JWTVerificationException ex) {
+            return null;
+        }
+    }
+
     public long getExpiresInSeconds() {
         return Duration.ofHours(expirationHours).toSeconds();
     }

@@ -1,5 +1,8 @@
 package br.com.specvora_service.config;
 
+import br.com.specvora_service.security.SecurityAuditLogger;
+import br.com.specvora_service.security.SecurityAuditLogger.EventType;
+import br.com.specvora_service.security.SecurityAuditLogger.Severity;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -13,9 +16,13 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
+
+import java.util.List;
+import java.util.Map;
 
 @Configuration
 @EnableMethodSecurity
@@ -26,6 +33,7 @@ public class SecurityConfig {
     private final IdempotencyFilter idempotencyFilter;
     private final RateLimitingFilter rateLimitingFilter;
     private final ErrorResponseWriter errorResponseWriter;
+    private final SecurityAuditLogger securityAuditLogger;
 
     @Bean
     public static RoleHierarchy roleHierarchy() {
@@ -85,9 +93,15 @@ public class SecurityConfig {
                         .authenticationEntryPoint((request, response, authException) ->
                                 errorResponseWriter.write(response, request, HttpStatus.UNAUTHORIZED,
                                         "Acesso não autorizado: credenciais ausentes ou token inválido"))
-                        .accessDeniedHandler((request, response, accessDeniedException) ->
-                                errorResponseWriter.write(response, request, HttpStatus.FORBIDDEN,
-                                        "Acesso proibido: seu perfil não possui permissão para executar esta operação"))
+                        .accessDeniedHandler((request, response, accessDeniedException) -> {
+                            var auth = SecurityContextHolder.getContext().getAuthentication();
+                            securityAuditLogger.logFromRequest(request, EventType.SECURITY_ACCESS_DENIED, Severity.WARN,
+                                    auth != null ? auth.getName() : null, HttpStatus.FORBIDDEN.value(),
+                                    "Acesso negado: perfil sem permissão para o recurso",
+                                    Map.of("roles", auth != null ? auth.getAuthorities().stream().map(Object::toString).toList() : List.of()));
+                            errorResponseWriter.write(response, request, HttpStatus.FORBIDDEN,
+                                    "Acesso proibido: seu perfil não possui permissão para executar esta operação");
+                        })
                 )
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .formLogin(AbstractHttpConfigurer::disable)

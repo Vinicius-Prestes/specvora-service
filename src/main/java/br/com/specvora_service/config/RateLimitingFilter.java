@@ -1,5 +1,8 @@
 package br.com.specvora_service.config;
 
+import br.com.specvora_service.security.SecurityAuditLogger;
+import br.com.specvora_service.security.SecurityAuditLogger.EventType;
+import br.com.specvora_service.security.SecurityAuditLogger.Severity;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.ConsumptionProbe;
@@ -32,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class RateLimitingFilter extends OncePerRequestFilter {
 
     private final ErrorResponseWriter errorResponseWriter;
+    private final SecurityAuditLogger securityAuditLogger;
 
     private static final Bandwidth GENERAL_LIMIT = Bandwidth.simple(60, Duration.ofMinutes(1));
     private static final Bandwidth LOGIN_BRUTE_FORCE_LIMIT = Bandwidth.simple(5, Duration.ofMinutes(1));
@@ -77,6 +81,15 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             response.setHeader("X-RateLimit-Limit", String.valueOf(limitCapacity));
             response.setHeader("X-RateLimit-Remaining", "0");
             response.setHeader("Retry-After", String.valueOf(waitForRefillSeconds));
+
+            securityAuditLogger.logFromRequest(request, EventType.RATE_LIMIT_EXCEEDED, Severity.WARN,
+                    clientKey.startsWith("user:") ? clientKey.substring(5) : null,
+                    HttpStatus.TOO_MANY_REQUESTS.value(),
+                    "Limite de requisições excedido. Bloqueio temporário ativado.",
+                    Map.of("route_type", isLoginRoute ? "LOGIN_BRUTE_FORCE_PROTECTION" : "GENERAL_API_LIMIT",
+                            "limit_capacity", limitCapacity,
+                            "retry_after_seconds", waitForRefillSeconds,
+                            "bucket_key", clientKey));
 
             errorResponseWriter.write(response, request, HttpStatus.TOO_MANY_REQUESTS,
                     "Taxa limite de requisições excedida. Tente novamente em " + waitForRefillSeconds + " segundos.");

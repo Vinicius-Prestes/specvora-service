@@ -214,10 +214,9 @@ O `LocalEncryptionService` implementa criptografia autenticada **AES-256-GCM (AE
 
 **Como o projeto corrige**
 O pipeline automatizado no GitHub Actions ([`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)) assegura que nenhum artefato vulnerável atinja os ambientes da Ford:
-- **Secret Scanning (Gitleaks):** Bloqueio imediato (`exit-code: 1`) contra commits contendo chaves ou URIs expostas.
-- **SCA (Dependabot & Trivy FS):** Monitoramento contínuo de CVEs em dependências do Maven, bloqueio de severidades críticas/altas (`exit-code: 1`) e exportação SARIF para a aba de segurança do GitHub.
-- **SAST (Semgrep & SonarCloud):** Análise estática contra OWASP Top 10 e padrões Java com `--error`.
-- **IaC & Container Security (Trivy Config & Trivy Image):** Verificação de configurações de containers e escaneamento da imagem Docker multi-stage sem root (`appuser` 10001).
-- **Evidências de Teste:** Upload automático dos relatórios de teste do Maven Surefire como artefato do build.
+- **Secret Scanning (TruffleHog & Gitleaks):** Bloqueio de commits contendo chaves ou URIs expostas.
+- **SAST (Semgrep):** Análise estática contra OWASP Top 10 e padrões Java com `--error`.
+- **SCA e Container Security (Trivy):** Relatórios SARIF informativos das dependências Maven e da imagem Docker; Dependabot semanal.
+- **Evidências de Teste:** Upload automático dos relatórios Surefire e JaCoCo como artefatos do build.
 
-Para o detalhamento do fluxo corporativo no ecossistema Ford e arquitetura MQTT/TLS, consulte [DEVSECOPS.md](DEVSECOPS.md). Para os testes e comparativos de código "Antes x Depois", consulte [SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md).
+Para o diagrama do pipeline e os resultados das varreduras, consulte [DEVSECOPS.md](DEVSECOPS.md). Para os testes e comparativos de código "Antes x Depois", consulte [SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md).

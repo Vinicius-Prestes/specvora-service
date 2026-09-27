@@ -1,0 +1,13 @@
+# Fingerprints ignorados pelo Gitleaks (formato commit:arquivo:regra:linha).
+# Toda entrada precisa de justificativa. Nunca ignore um segredo ainda válido.
+
+# Falso-positivo: UUID de exemplo de Idempotency-Key em log fictício
+5f39f2d9264b4ed98e0cedc7bf085390195095ae:LOGS_ALERTAS_INCIDENTES.md:generic-api-key:190
+
+# Segredos históricos já REVOGADOS/ROTACIONADOS (removidos do código; permanecem
+# apenas no histórico do Git). Os valores novos vivem só em variáveis de ambiente.
+5f39f2d9264b4ed98e0cedc7bf085390195095ae:docker-compose.yml:mongodb-connection-string-with-credentials:7
+5f39f2d9264b4ed98e0cedc7bf085390195095ae:docker-compose.yml:hardcoded-jwt-or-aes-secret:8
+4a8255fe908b9f84b0959f26f7886f6a354625cc:src/main/resources/application.yml:hardcoded-jwt-or-aes-secret:27
+ac4a41903ef056e463269d9da8b5b305a41fbb3e:README.md:mongodb-connection-string-with-credentials:232
+ac4a41903ef056e463269d9da8b5b305a41fbb3e:README.md:mongodb-connection-string-with-credentials:245

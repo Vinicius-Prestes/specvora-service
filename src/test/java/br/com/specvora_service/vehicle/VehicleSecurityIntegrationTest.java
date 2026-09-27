@@ -81,7 +81,7 @@ class VehicleSecurityIntegrationTest {
         jwtTokenService.validateAndInitAlgorithm();
 
         ErrorResponseWriter writer = new ErrorResponseWriter();
-        jwtAuthFilter = new JwtAuthFilter(jwtTokenService, writer);
+        jwtAuthFilter = new JwtAuthFilter(jwtTokenService, writer, org.mockito.Mockito.mock(br.com.specvora_service.security.SecurityAuditLogger.class));
 
         mockMvc = MockMvcBuilders.standaloneSetup(vehicleController)
                 .setControllerAdvice(new GlobalExceptionHandler())

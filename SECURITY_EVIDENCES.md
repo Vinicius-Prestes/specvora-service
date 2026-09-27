@@ -8,55 +8,54 @@ Este documento consolida as **evidências técnicas de correções, mitigações
 
 | Pilar de Segurança | Prática Aplicada | Arquivo Principal | Vulnerabilidade Mitigada | Evidência de Teste |
 |---|---|---|---|---|
-| **Criptografia Local** | Criptografia autenticada **AES-256-GCM** com IV randômico de 12 bytes aplicada ativamente a dados de auditoria em repouso | [`LocalEncryptionService.java`](src/main/java/br/com/specvora_service/security/LocalEncryptionService.java), [`AuthService.java`](src/main/java/br/com/specvora_service/auth/service/AuthService.java) | Exposição de dados sensíveis em repouso e vulnerabilidade a adulteração (*bit-flipping*) | [`LocalEncryptionServiceTest.java`](src/test/java/br/com/specvora_service/security/LocalEncryptionServiceTest.java) |
-| **Prevenção de Escalada de Privilégio** | Bloqueio de auto-registro com perfis elevados e **RBAC 3-Tier com RoleHierarchy** | [`AuthService.java`](src/main/java/br/com/specvora_service/auth/service/AuthService.java), [`SecurityConfig.java`](src/main/java/br/com/specvora_service/config/SecurityConfig.java) | Escalada horizontal e vertical de privilégios via endpoint de cadastro público | [`AuthServiceTest.java`](src/test/java/br/com/specvora_service/auth/AuthServiceTest.java), [`VehicleSecurityIntegrationTest.java`](src/test/java/br/com/specvora_service/vehicle/VehicleSecurityIntegrationTest.java) |
+| **Criptografia Local** | Criptografia autenticada **AES-256-GCM** com IV randômico de 12 bytes aplicada ao registro de auditoria dos usuários | [`LocalEncryptionService.java`](src/main/java/br/com/specvora_service/security/LocalEncryptionService.java), [`AuthService.java`](src/main/java/br/com/specvora_service/auth/service/AuthService.java) | Exposição de dados sensíveis em repouso e vulnerabilidade a adulteração (*bit-flipping*) | [`LocalEncryptionServiceTest.java`](src/test/java/br/com/specvora_service/security/LocalEncryptionServiceTest.java) |
+| **Prevenção de Escalada de Privilégio** | Bloqueio de auto-registro com perfis elevados e **RBAC 3-Tier com RoleHierarchy** | [`AuthService.java`](src/main/java/br/com/specvora_service/auth/service/AuthService.java), [`SecurityConfig.java`](src/main/java/br/com/specvora_service/config/SecurityConfig.java) | Escalada horizontal e vertical de privilégios via endpoint de cadastro público | [`AuthServiceTest.java`](src/test/java/br/com/specvora_service/auth/AuthServiceTest.java), [`SecurityFilterChainIntegrationTest.java`](src/test/java/br/com/specvora_service/security/SecurityFilterChainIntegrationTest.java) |
 | **Hardening de API: Rate Limit** | Algoritmo **Token Bucket** com política estrita anti-força bruta em `/auth/login` (5 req/min), limite de memória e resolução segura de IP | [`RateLimitingFilter.java`](src/main/java/br/com/specvora_service/config/RateLimitingFilter.java) | Ataques de força bruta, credential stuffing, spoofing de IP e saturação de heap | [`RateLimitingFilterTest.java`](src/test/java/br/com/specvora_service/config/RateLimitingFilterTest.java) |
 | **Hardening de API: Validação de Entrada** | Bean Validation com Unicode (`\p{L}`), sanitização de operadores NoSQL (`$` e `.`) e limites de payload | [`VehicleRequestDTO.java`](src/main/java/br/com/specvora_service/vehicle/dto/VehicleRequestDTO.java), [`VehicleUpsertDTO.java`](src/main/java/br/com/specvora_service/vehicle/dto/VehicleUpsertDTO.java) | NoSQL Injection, XSS Refletido, DoS por sobrecarga de BCrypt | [`VehicleServiceTest.java`](src/test/java/br/com/specvora_service/vehicle/VehicleServiceTest.java) |
 | **Hardening de API: JWT Seguro** | HS256 fixo, entropia mínima de 256 bits, geração efêmera segura, verificação de `iss`/`aud` e rejeição de token expirado | [`JwtTokenService.java`](src/main/java/br/com/specvora_service/auth/service/JwtTokenService.java) | Algoritmo `none`, segredos fracos/públicos, spoofing de token e confusão de audiência | [`JwtTokenServiceTest.java`](src/test/java/br/com/specvora_service/auth/JwtTokenServiceTest.java) |
 | **Maturidade de Erros e Respostas** | Serialização unificada RFC 7807 via `ErrorResponseWriter` e eliminação de retornos 500 para erros de cliente | [`ErrorResponseWriter.java`](src/main/java/br/com/specvora_service/config/ErrorResponseWriter.java), [`GlobalExceptionHandler.java`](src/main/java/br/com/specvora_service/vehicle/exception/GlobalExceptionHandler.java) | Formatos discrepantes de erro e falhas de cliente (400, 404, 405, 409, 415) gerando HTTP 500 | [`GlobalExceptionHandlerTest.java`](src/test/java/br/com/specvora_service/vehicle/GlobalExceptionHandlerTest.java) |
-| **Hardening de Infraestrutura & IaC** | Imagem Docker multi-stage real com usuário não-root (UID 10001), Compose seguro e scan IaC Trivy | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml) | Container breakout, privilégios desnecessários e falhas de configuração de infraestrutura | Job `iac-scan` e `container-security` no CI |
+| **Hardening de Infraestrutura** | Imagem Docker multi-stage com usuário não-root (UID 10001) e Compose sem segredos no arquivo (lidos do ambiente / `.env`) | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml), [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml) | Container breakout, privilégios desnecessários e falhas de configuração de infraestrutura | Job `container-security` no CI (Trivy Image, informativo) |
 
 ---
 
-## 2. Evidência 1: Criptografia Local (AES-256-GCM) em Dados Reais
+## 2. Evidência 1: Criptografia Local (AES-256-GCM)
 
 ### Contexto e Risco
 O armazenamento de dados em repouso sem proteção criptográfica expõe identificadores e informações confidenciais a vazamentos em backups, falhas de auditoria e dumps de memória. O uso de cifras sem autenticação de integridade também sujeita os dados a ataques de manipulação de bits (*bit-flipping*).
 
 ### Implementação da Solução
 1. **AES-256-GCM com AEAD:** O [`LocalEncryptionService`](src/main/java/br/com/specvora_service/security/LocalEncryptionService.java) implementa a cifra autenticada **AES-256-GCM**, com IV randômico de 12 bytes gerado a cada operação com `SecureRandom` e tag de integridade de 128 bits.
-2. **Eliminação de Segredo Hardcoded:** O serviço não possui segredo estático público no código. Se a variável `AES_SECRET` não for fornecida, uma chave forte de 256 bits é gerada de forma efêmera em memória com registro em nível WARN.
-3. **Aplicação Prática em Produção:** Em [`AuthService`](src/main/java/br/com/specvora_service/auth/service/AuthService.java), registros de telemetria e auditoria de autenticação do usuário são cifrados em tempo real com `LocalEncryptionService.encrypt()` e persistidos com proteção de confidencialidade e integridade.
+2. **Eliminação de Segredo Hardcoded:** Não há chave fixa no código nem no `application.yml` (`AES_SECRET` sem valor padrão). A chave de 256 bits é derivada com SHA-256 do segredo fornecido pelo ambiente; na ausência dele, uma chave efêmera aleatória é gerada em memória com aviso em nível WARN.
+3. **Escopo atual de aplicação:** Em [`AuthService`](src/main/java/br/com/specvora_service/auth/service/AuthService.java), o registro de auditoria de cada usuário (data de cadastro, username e perfis) é cifrado no momento do cadastro e mantido apenas na forma cifrada no armazenamento de usuários (em memória nesta versão).
+4. **Limitação e evolução:** o usuário ainda não é persistido no MongoDB e o registro cifrado não é consumido por outra rotina. O próximo passo previsto é aplicar o mesmo serviço aos campos pessoais do usuário persistido (e-mail, telefone) e às credenciais de integração, com a chave fornecida por um cofre de segredos (Vault / KMS).
 
 ### Comparativo de Código: Antes x Depois
 
-**Antes:** O serviço possuía uma chave fixa pública em fallback e não era consumido por nenhuma rotina do sistema:
+**Antes:** chave fixa e pública como valor padrão, e o serviço não era consumido por nenhuma rotina do sistema:
 ```java
-// Código legado com chave hardcoded e sem utilização prática
-@Value("${security.crypto.aes-secret:specvora-super-secret-aes-key-for-local-encryption-2026}")
+@Value("${security.crypto.aes-secret:<chave-fixa-removida>}")
 private String aesSecret;
 ```
 
 **Depois:**
 ```java
-// LocalEncryptionService.java — Inicialização segura e geração efêmera
+// LocalEncryptionService.java — sem segredo no código; chave efêmera se o ambiente não fornecer
 @PostConstruct
 public void init() {
-    if (aesSecret == null || aesSecret.isBlank()) {
-        log.warn("Hardening: AES_SECRET não configurado. Gerando chave efêmera de 256 bits.");
-        byte[] ephemeral = new byte[32];
-        new SecureRandom().nextBytes(ephemeral);
-        this.secretKey = new SecretKeySpec(ephemeral, "AES");
+    if (rawSecret == null || rawSecret.trim().isEmpty()) {
+        log.warn("AVISO DE SEGURANÇA: AES_SECRET não configurado via variável de ambiente. Gerando chave randômica efêmera segura de 256 bits.");
+        byte[] randomKey = new byte[32];
+        secureRandom.nextBytes(randomKey);
+        this.secretKey = new SecretKeySpec(randomKey, ENCRYPTION_ALGORITHM);
     } else {
-        byte[] keyBytes = aesSecret.getBytes(StandardCharsets.UTF_8);
-        this.secretKey = new SecretKeySpec(Arrays.copyOf(keyBytes, 32), "AES");
+        byte[] keyBytes = deriveKey256(rawSecret);   // SHA-256 → 32 bytes
+        this.secretKey = new SecretKeySpec(keyBytes, ENCRYPTION_ALGORITHM);
     }
 }
 
-// AuthService.java — Utilização real em auditoria de usuários
-String auditPayload = String.format("{\"user\":\"%s\",\"roles\":\"%s\",\"auditTime\":\"%s\"}",
-        user.getUsername(), user.getRoles(), Instant.now());
-user.setEncryptedAuditRecord(localEncryptionService.encrypt(auditPayload));
+// AuthService.java — registro de auditoria do usuário armazenado apenas cifrado
+String auditPayload = "audit:registered_at=" + Instant.now() + ";user=" + dto.getUsername() + ";roles=" + roles;
+String encryptedAudit = localEncryptionService.encrypt(auditPayload);
 ```
 
 ### Evidência de Teste Automatizado
@@ -224,39 +223,34 @@ void testExpiredTokenIsRejected() {
 
 ## 7. Evidência 6: Teste de Integração de Ponta a Ponta da SecurityFilterChain
 
-Para comprovar a eficácia real das regras de segurança sem mocks na camada de filtro, foi criado o teste de integração [`VehicleSecurityIntegrationTest.java`](src/test/java/br/com/specvora_service/vehicle/VehicleSecurityIntegrationTest.java), utilizando `@WebMvcTest` com carregamento real do `SecurityConfig`, `JwtAuthFilter`, `JwtTokenService` e `ErrorResponseWriter`:
+O teste [`SecurityFilterChainIntegrationTest.java`](src/test/java/br/com/specvora_service/security/SecurityFilterChainIntegrationTest.java) sobe a camada web com `@WebMvcTest` e a **`SecurityFilterChain` real** (`SecurityConfig`, `JwtAuthFilter`, `IdempotencyFilter`, `RateLimitingFilter`, `JwtTokenService`, `AuthService`), sem mocks na segurança — apenas o `VehicleService` e o `SecurityAuditLogger` são simulados. São 18 cenários:
+
+| Cenário | Esperado |
+|---|---|
+| Sem token / token com assinatura inválida / token expirado | `401` + evento `AUTH_TOKEN_INVALID` ou `AUTH_TOKEN_EXPIRED` |
+| `USER` em `POST`, `PUT` ou `DELETE /vehicles` | `403` + evento `SECURITY_ACCESS_DENIED` |
+| `USER` em `GET /vehicles` | `200` |
+| `GESTOR` em `POST /vehicles` / `DELETE /vehicles/{id}` | `201` com `Location` / `403` |
+| `ADMINISTRADOR` em `DELETE /vehicles/{id}`; só `ROLE_ADMINISTRADOR` em `POST` (hierarquia) | `204` / `201` |
+| Mesmo `Idempotency-Key` duas vezes | `201` e depois `409` + evento `IDEMPOTENCY_CONFLICT` |
+| 6ª tentativa de login no minuto | `429` + evento `RATE_LIMIT_EXCEEDED` |
+| Registro anônimo `USER` / anônimo `GESTOR` / `USER` pedindo `ADMINISTRADOR` / admin criando `GESTOR` | `201` / `403` / `403` / `201` |
+| `GET /auth/me` com token válido | `200` com `expiresAt` |
 
 ```java
-@WebMvcTest(controllers = VehicleController.class)
-@Import({SecurityConfig.class, JwtAuthFilter.class, IdempotencyFilter.class,
-        RateLimitingFilter.class, JwtTokenService.class, GlobalExceptionHandler.class,
-        ErrorResponseWriter.class})
-class VehicleSecurityIntegrationTest {
+@WebMvcTest(controllers = {VehicleController.class, AuthController.class})
+@Import({SecurityConfig.class, JwtAuthFilter.class, IdempotencyFilter.class, RateLimitingFilter.class,
+        ErrorResponseWriter.class, CrossOriginConfig.class, GlobalExceptionHandler.class,
+        JwtTokenService.class, AuthService.class, LocalEncryptionService.class})
+class SecurityFilterChainIntegrationTest {
 
     @Test
-    void semToken_retorna401() throws Exception {
-        mockMvc.perform(get("/vehicles")).andExpect(status().isUnauthorized());
-    }
-
-    @Test
-    void userCriando_retorna403() throws Exception {
-        String token = jwtTokenService.generateToken("user", List.of("ROLE_USER"));
-        mockMvc.perform(post("/vehicles")
-                .header("Authorization", "Bearer " + token)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(VEHICLE_JSON))
+    void userCannotDelete() throws Exception {
+        mockMvc.perform(delete("/vehicles/veh-1").header("Authorization", bearer("user", USER_ROLES)))
                 .andExpect(status().isForbidden());
-    }
 
-    @Test
-    void adminCriando_retorna201ComLocation() throws Exception {
-        String token = jwtTokenService.generateToken("admin", List.of("ROLE_ADMINISTRADOR"));
-        mockMvc.perform(post("/vehicles")
-                .header("Authorization", "Bearer " + token)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(VEHICLE_JSON))
-                .andExpect(status().isCreated())
-                .andExpect(header().exists("Location"));
+        verify(securityAuditLogger).logFromRequest(any(), eq(SecurityAuditLogger.EventType.SECURITY_ACCESS_DENIED),
+                eq(SecurityAuditLogger.Severity.WARN), eq("user"), eq(403), anyString(), anyMap());
     }
 }
 ```

@@ -273,7 +273,8 @@ A suíte de testes cobre comportamentos de negócio, segurança em profundidade 
 
 | Classe de Teste | Camada Testada | Cenários Validados |
 |---|---|---|
-| [`VehicleSecurityIntegrationTest`](src/test/java/br/com/specvora_service/vehicle/VehicleSecurityIntegrationTest.java) | **SecurityFilterChain Real** | Requisição sem token (`401`), token com perfil `USER` tentando POST (`403`), criação com perfil `ADMINISTRADOR`/`GESTOR` (**`201`** com header **`Location`**), e exclusão com `ADMINISTRADOR` (**`204 No Content`**). |
+| [`SecurityFilterChainIntegrationTest`](src/test/java/br/com/specvora_service/security/SecurityFilterChainIntegrationTest.java) | **SecurityFilterChain Real** (`@WebMvcTest`) | `401` sem token, com token adulterado e expirado; matriz perfil × endpoint (`USER` → `403` em POST/PUT/DELETE, `GESTOR` → `201` com `Location`, `ADMINISTRADOR` → `204`); registro com perfil elevado; `/auth/me`; emissão dos eventos de auditoria (`AUTH_TOKEN_*`, `SECURITY_ACCESS_DENIED`, `IDEMPOTENCY_CONFLICT`, `RATE_LIMIT_EXCEEDED`). |
+| [`VehicleSecurityIntegrationTest`](src/test/java/br/com/specvora_service/vehicle/VehicleSecurityIntegrationTest.java) | Filtro JWT e hierarquia de perfis | Autenticação pelo `JwtAuthFilter` por perfil, rejeição de token adulterado e `RoleHierarchy`. |
 | [`JwtTokenServiceTest`](src/test/java/br/com/specvora_service/auth/JwtTokenServiceTest.java) | Token / Criptografia | Assinatura HMAC256, audiência `specvora-api`, emissor, extração de roles, rejeição de chave fraca, geração de chave efêmera e **rejeição estrita de token expirado**. |
 | [`AuthServiceTest`](src/test/java/br/com/specvora_service/auth/AuthServiceTest.java) | Segurança / Negócio | Login com BCrypt, bloqueio de escalada de privilégio (**`403`**), detecção de username duplicado (**`409`**), propagação de `expiresAt` e auditoria cifrada em repouso. |
 | [`RateLimitingFilterTest`](src/test/java/br/com/specvora_service/config/RateLimitingFilterTest.java) | Hardening de API | Proteção anti-força bruta na rota `/auth/login` (6ª tentativa bloqueada com **`429`**, `Retry-After` e formato unificado via `ErrorResponseWriter`). |
@@ -292,14 +293,12 @@ A suíte de testes cobre comportamentos de negócio, segurança em profundidade 
 ## 6. Pipeline DevSecOps Integrado
 
 O projeto conta com uma pipeline CI/CD automatizada no **GitHub Actions** ([`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml)), integrando:
-- **Secret Scanning:** Gitleaks com regras customizadas em [`.gitleaks.toml`](.gitleaks.toml).
-- **SCA (Software Composition Analysis):** Dependabot + Trivy FS (`exit-code: 1` e SARIF) + Snyk opcional.
-- **SAST (Static Application Security Testing):** Semgrep com regras OWASP Top 10 e regras Java com upload SARIF.
-- **IaC Security:** Trivy Config analisando Dockerfile e docker-compose.
-- **Container Hardening:** Dockerfile multi-stage com usuário não-root (`appuser` 10001) e scan Trivy Image.
-- **Evidências de Build:** Upload automático de relatórios Surefire e Quality Gates bloqueantes.
+- **Secret Scanning (bloqueante):** TruffleHog (`--only-verified`) + Gitleaks com regras em [`.gitleaks.toml`](.gitleaks.toml).
+- **SAST (bloqueante):** Semgrep com `p/owasp-top-ten` e `p/java`, `--error` e upload SARIF.
+- **Build & Testes (bloqueante):** `mvn verify` com relatórios Surefire e JaCoCo publicados.
+- **SCA e Container Security (informativos):** Trivy FS / Snyk opcional e Trivy Image, com SARIF; Dependabot semanal.
 
-Documentação completa, fluxo no ecossistema Ford e arquitetura MQTT/TLS em: **[DEVSECOPS.md](DEVSECOPS.md)**.
+Documentação completa, diagrama e resultados das varreduras em: **[DEVSECOPS.md](DEVSECOPS.md)**.
 Relatório de evidências detalhado com comparativos "Antes x Depois": **[SECURITY_EVIDENCES.md](SECURITY_EVIDENCES.md)**.
 
 ---

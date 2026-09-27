@@ -5,6 +5,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Aguarda a nova versão "amadurecer" antes do PR (mitiga pacotes maliciosos recém-publicados)
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
@@ -18,6 +21,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Aguarda a nova versão "amadurecer" antes do PR (mitiga pacotes maliciosos recém-publicados)
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(ci)"
     labels:

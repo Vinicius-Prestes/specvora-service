@@ -66,7 +66,9 @@ Para viabilizar indexação em alta performance, auditoria de conformidade (LGPD
 
 ---
 
-### 2.2. Exemplos Reais de Logs Estruturados por Evento Crítico
+### 2.2. Exemplos de Logs Estruturados por Evento Crítico
+
+> Todos os `event_type` abaixo são emitidos pelo código atual (`AuthService`, `VehicleService`, `JwtAuthFilter`, `RateLimitingFilter`, `IdempotencyFilter` e o `accessDeniedHandler` do `SecurityConfig`); a emissão é verificada no `SecurityFilterChainIntegrationTest`. Timestamps e IPs dos exemplos são ilustrativos.
 
 #### Exemplo 1: Tentativa de Login Bem-sucedida (`AUTH_LOGIN_SUCCESS`)
 ```json
@@ -187,7 +189,7 @@ Para viabilizar indexação em alta performance, auditoria de conformidade (LGPD
   "status_code": 409,
   "message": "Requisição duplicada interceptada pelo filtro de idempotência",
   "details": {
-    "idempotency_key": "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+    "idempotency_key": "req-001",
     "action": "REJECTED_DUPLICATE"
   }
 }

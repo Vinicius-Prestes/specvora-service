@@ -27,7 +27,7 @@ public class RegisterRequestDTO {
     @Schema(description = "Senha de acesso", example = "senhaForte123")
     private String password;
 
-    @Pattern(regexp = "^(?i)(USER|ADMIN)$", message = "O perfil deve ser USER ou ADMIN")
-    @Schema(description = "Perfil de acesso (USER ou ADMIN). Padrão: USER", example = "USER")
+    @Pattern(regexp = "^(?i)(USER|GESTOR|ADMINISTRADOR|ADMIN)$", message = "O perfil deve ser USER, GESTOR ou ADMINISTRADOR")
+    @Schema(description = "Perfil de acesso (USER, GESTOR ou ADMINISTRADOR). Perfis acima de USER exigem token de administrador. Padrão: USER", example = "USER")
     private String role;
 }

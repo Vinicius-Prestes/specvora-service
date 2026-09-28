@@ -101,7 +101,7 @@ flowchart TD
 
 ### 3.2. Secret Scanning com TruffleHog
 
-- **Execução:** job `secret-scanning`, action `trufflesecurity/trufflehog` v3.97.9 com `--only-verified`, sobre o histórico Git (`fetch-depth: 0`) entre a branch padrão e o `HEAD`.
+- **Execução:** job `secret-scanning`, action `trufflesecurity/trufflehog` v3.97.9 com `--only-verified`, sobre o histórico Git (`fetch-depth: 0`). O intervalo vem do evento: no `push`, os commits enviados (`before..after`); no `pull_request`, os commits do PR; no `workflow_dispatch`, o histórico inteiro.
 - **Como funciona:** mais de 800 detectores reconhecem formatos de credenciais (chaves AWS/GCP, tokens GitHub, URIs MongoDB, chaves privadas etc.) e, para cada candidato, o TruffleHog **tenta autenticar no serviço de origem**. Com `--only-verified`, o gate só falha para segredos confirmadamente válidos, eliminando falsos-positivos.
 - **Complemento:** o Gitleaks roda no mesmo job com regras próprias em [`.gitleaks.toml`](.gitleaks.toml) (chave privada de Service Account Firebase, URI MongoDB com senha, `JWT_SECRET`/`AES_SECRET` com valor literal). Exceções só por *fingerprint* em [`.gitleaksignore`](.gitleaksignore).
 - **Achados reais** (varredura local de todo o histórico, modo sem `--only-verified`): credenciais de desenvolvimento em commits antigos — URI do MongoDB com senha (`README.md`, `docker-compose.yml`) e os valores padrão de `JWT_SECRET` e da chave AES (`application.yml`, `JwtTokenService.java`, `docker-compose.yml`, `SECURITY_EVIDENCES.md`). Nenhuma era credencial verificada de produção.

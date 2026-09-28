@@ -28,9 +28,9 @@ jobs:
       - name: Run TruffleHog Secret Scanner
         uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85 # v3.97.9
         with:
+          # Sem base/head: a action escolhe o intervalo pelo evento
+          # (push: before..after; pull_request: base..head do PR).
           path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
           extra_args: --only-verified
 
       - name: Run Gitleaks Secret Scanner

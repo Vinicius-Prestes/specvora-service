@@ -2,6 +2,16 @@
 
 > **API RESTful Nível 2** para agregação, consulta e gerenciamento de especificações técnicas de veículos, desenvolvida com Spring Boot, MongoDB, Autenticação JWT com RBAC 3-Tier (`ROLE_USER`, `ROLE_GESTOR`, `ROLE_ADMINISTRADOR`) e Pipeline DevSecOps Integrado.
 
+## Integrantes do Time
+
+| Nome | RM |
+|---|---|
+| Denise Senise | 556006 |
+| Larissa Rodrigues Lapa | 554517 |
+| Mateus Leme | 557803 |
+| David Gabriel Gomes Fernandes | 556020 |
+| Vinicius Augusto Neves Prestes | 559097 |
+
 ---
 
 ## 1. Arquitetura da Solução

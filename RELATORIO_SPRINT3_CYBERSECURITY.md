@@ -4,6 +4,16 @@
 **Stack Tecnológica:** Java 21 LTS, Spring Boot 4.0, Spring Security, MongoDB, Docker, GitHub Actions, Semgrep, TruffleHog, Gitleaks, Bucket4j  
 **Data de Emissão:** Setembro / 2026  
 
+## Integrantes do Time
+
+| Nome | RM |
+|---|---|
+| Denise Senise | 556006 |
+| Larissa Rodrigues Lapa | 554517 |
+| Mateus Leme | 557803 |
+| David Gabriel Gomes Fernandes | 556020 |
+| Vinicius Augusto Neves Prestes | 559097 |
+
 ---
 
 ## Sumário Executivo
